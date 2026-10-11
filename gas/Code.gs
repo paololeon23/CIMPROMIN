@@ -129,6 +129,7 @@ function doGet(e) {
   }
 
   var range = dateRangeFromQuery(q);
+  var unDia = range.desde === range.hasta;
   return jsonOut({
     ok: true,
     ping: true,
@@ -136,6 +137,7 @@ function doGet(e) {
     app: "Cocina QBerries",
     time: new Date().toISOString(),
     timezone: TZ,
+    fecha: unDia ? range.desde : "",
     desde: range.desde,
     hasta: range.hasta,
     reservas: listReservas(range.desde, range.hasta)
@@ -626,8 +628,15 @@ function listReservas(desde, hasta) {
   }
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var list = [];
-  list = list.concat(readSheetReservas(ensurePersonSheet(ss, "Trabajadores"), false, desde, hasta));
-  list = list.concat(readSheetReservas(ensurePersonSheet(ss, "Comidas extras"), true, desde, hasta));
+  var people = ensurePersonSheet(ss, "Trabajadores");
+  var extras = ensurePersonSheet(ss, "Comidas extras");
+  if (desde === hasta) {
+    list = list.concat(readSheetDay(people, false, desde));
+    list = list.concat(readSheetDay(extras, true, desde));
+  } else {
+    list = list.concat(readSheetReservas(people, false, desde, hasta));
+    list = list.concat(readSheetReservas(extras, true, desde, hasta));
+  }
   list = dedupeActivas(list);
   try { cache.put(key, JSON.stringify(list), ADMIN_CACHE_SEC); } catch (e2) { /* ignore */ }
   return list;
@@ -643,44 +652,77 @@ function readSheetReservas(pack, fromExtra, desde, hasta) {
   var out = [];
   for (var i = 0; i < values.length; i++) {
     var row = values[i];
-    var fecha = normFecha(val(pack, row, "fecha_local"));
-    if (!fecha || fecha < desde || fecha > hasta) continue;
-    var dni = onlyDni(val(pack, row, "trabajador_dni"));
-    if (!/^\d{8}$/.test(dni)) continue;
-    var status = normStatus(val(pack, row, "status"));
-    var extra = fromExtra || isExtraFlag(val(pack, row, "extra"));
-    if (status === "cancelled") extra = false;
-    var sid = onlyDni(val(pack, row, "supervisor_id"));
-    var sap = valSupName(pack, row);
-    var sede = canonSede(val(pack, row, "comedor"));
-    var fundo = canonFundo(val(pack, row, "fundo") || val(pack, row, "etapa"));
-    var supervisor = titleCase(sap) || sid;
-    if (!supervisor || !sede) continue;
-    var apellido = String(val(pack, row, "trabajador_apellido") || "").trim();
-    var nombre = String(val(pack, row, "trabajador_nombre") || "").trim();
-    var name = (apellido + " " + nombre).replace(/\s+/g, " ").trim();
-    if (!name) continue;
-    out.push({
-      id: dni,
-      dni: dni,
-      name: name,
-      apellido: apellido,
-      nombre: nombre,
-      date: fecha,
-      time: normHora(val(pack, row, "hora_guardado")),
-      supervisor: supervisor,
-      supervisor_id: sid,
-      sede: sede,
-      comedor: sede,
-      fundo: fundo,
-      etapa: fundo,
-      extra: extra,
-      tipo: extra ? "extra" : "lista",
-      status: status,
-      comidas: Number(val(pack, row, "comidas")) === 2 ? 2 : 1
-    });
+    var item = reservaFromRow(pack, row, fromExtra);
+    if (!item || item.date < desde || item.date > hasta) continue;
+    out.push(item);
   }
   return out;
+}
+
+function readSheetDay(pack, fromExtra, fecha) {
+  var sh = pack.sh;
+  var last = sh.getLastRow();
+  if (last < 2 || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return [];
+  var lastCol = Math.max(sh.getLastColumn(), COLS_TRABAJADORES.length);
+  var out = [];
+  var cursor = last;
+  var guard = 0;
+  while (cursor >= 2 && guard < 24) {
+    guard += 1;
+    var start = Math.max(2, cursor - 799);
+    var values = sh.getRange(start, 1, cursor - start + 1, lastCol).getValues();
+    var dated = 0;
+    var older = 0;
+    for (var i = 0; i < values.length; i++) {
+      var item = reservaFromRow(pack, values[i], fromExtra);
+      if (!item) continue;
+      dated += 1;
+      if (item.date < fecha) older += 1;
+      else if (item.date === fecha) out.push(item);
+    }
+    if (out.length && dated && older === dated) break;
+    if (start === 2) break;
+    cursor = start - 1;
+  }
+  return out;
+}
+
+function reservaFromRow(pack, row, fromExtra) {
+  var fecha = normFecha(val(pack, row, "fecha_local"));
+  if (!fecha) return null;
+  var dni = onlyDni(val(pack, row, "trabajador_dni"));
+  if (!/^\d{8}$/.test(dni)) return null;
+  var status = normStatus(val(pack, row, "status"));
+  var extra = fromExtra || isExtraFlag(val(pack, row, "extra"));
+  if (status === "cancelled") extra = false;
+  var sid = onlyDni(val(pack, row, "supervisor_id"));
+  var supervisor = titleCase(valSupName(pack, row)) || sid;
+  var sede = canonSede(val(pack, row, "comedor"));
+  if (!supervisor || !sede) return null;
+  var apellido = String(val(pack, row, "trabajador_apellido") || "").trim();
+  var nombre = String(val(pack, row, "trabajador_nombre") || "").trim();
+  var name = (apellido + " " + nombre).replace(/\s+/g, " ").trim();
+  if (!name) return null;
+  var fundo = canonFundo(val(pack, row, "fundo") || val(pack, row, "etapa"));
+  return {
+    id: dni,
+    dni: dni,
+    name: name,
+    apellido: apellido,
+    nombre: nombre,
+    date: fecha,
+    time: normHora(val(pack, row, "hora_guardado")),
+    supervisor: supervisor,
+    supervisor_id: sid,
+    sede: sede,
+    comedor: sede,
+    fundo: fundo,
+    etapa: fundo,
+    extra: extra,
+    tipo: extra ? "extra" : "lista",
+    status: status,
+    comidas: Number(val(pack, row, "comidas")) === 2 ? 2 : 1
+  };
 }
 
 function dedupeActivas(list) {
