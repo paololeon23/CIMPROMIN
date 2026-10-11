@@ -43,7 +43,7 @@ var APP_VERSION = "1.4.4";
 var TZ = "America/Lima";
 
 var FUNDOS = ["LICAPA I", "LICAPA II", "LICAPA III"];
-var DROP_COLS = ["lote_lista_id", "etapa", "lote", "lotes", "id"];
+var DROP_COLS = ["lote_lista_id", "etapa", "lote", "lotes", "id", "lote_campo", "modulo", "turno_campo"];
 
 var COLS_TRABAJADORES = [
   "fecha_local",
@@ -56,9 +56,6 @@ var COLS_TRABAJADORES = [
   "comida",
   "comedor",
   "fundo",
-  "lote_campo",
-  "modulo",
-  "turno_campo",
   "status",
   "comidas"
 ];
@@ -71,9 +68,6 @@ var COLS_SUPERVISORES = [
   "comida",
   "comedor",
   "fundo",
-  "lote_campo",
-  "modulo",
-  "turno_campo",
   "total_comidas"
 ];
 
@@ -1178,6 +1172,7 @@ function ensureNamedSheet(ss, name, headers) {
         map[need] = col;
       }
     }
+    paintSheetHead(sh);
   }
   var pack = { sh: sh, map: map, width: packWidth(map) };
   PACK_MEMO[name] = pack;
@@ -1562,6 +1557,19 @@ function cell(v, max) {
   return s.slice(0, max || 180);
 }
 
+function paintSheetHead(sh) {
+  var last = Math.max(sh.getLastColumn(), 1);
+  var head = sh.getRange(1, 1, 1, last);
+  head.setBackground("#3f8736");
+  head.setFontColor("#ffffff");
+  head.setFontWeight("bold");
+  head.setHorizontalAlignment("center");
+  head.setVerticalAlignment("middle");
+  sh.setFrozenRows(1);
+  sh.setRowHeight(1, 32);
+  try { sh.autoResizeColumns(1, last); } catch (e) { /* el ancho a mano no bloquea el envío */ }
+}
+
 function sheetReady(ss, name, headers) {
   var sh = ss.getSheetByName(name);
   if (sh) return sh;
@@ -1584,7 +1592,11 @@ function textOut(obj) {
 
 function setupSheets() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  ensurePersonSheet(ss, "Trabajadores");
-  ensurePersonSheet(ss, "Comidas extras");
-  ensureSupervisorSheet(ss);
+  PACK_MEMO = {};
+  var people = ensurePersonSheet(ss, "Trabajadores");
+  var extras = ensurePersonSheet(ss, "Comidas extras");
+  var supers = ensureSupervisorSheet(ss);
+  paintSheetHead(people.sh);
+  paintSheetHead(extras.sh);
+  paintSheetHead(supers.sh);
 }

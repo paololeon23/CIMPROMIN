@@ -124,6 +124,7 @@ const state = {
   loggingIn: false,
   emergencyPending: false,
   extraOn: false,
+  extraHold: false,
   admin: false,
   logoTaps: 0,
   mesaPage: 1,
@@ -527,8 +528,9 @@ function refreshHomeLock() {
   }
   const extraBtn = document.querySelector('.lote-pills [data-act="toggle-extra"]');
   const mealBtn = document.querySelector('.lote-pills [data-act="set-lote"]');
-  if (extraBtn) extraBtn.classList.toggle("on", !!state.extraOn);
-  if (mealBtn) mealBtn.classList.toggle("on", !state.extraOn);
+  const showExtra = !!state.extraOn || !!state.extraHold;
+  if (extraBtn) extraBtn.classList.toggle("on", showExtra);
+  if (mealBtn) mealBtn.classList.toggle("on", !showExtra);
   const send = document.querySelector('[data-act="go-summary"]');
   if (send) send.disabled = !getMesa().length || locked;
   refreshPendPill();
@@ -548,6 +550,7 @@ function warnLocked() {
 function toggleExtra() {
   if (state.extraOn) {
     state.extraOn = false;
+    state.extraHold = false;
     store.clearMesa();
     speak("Extra apagado. Se limpió la lista.");
     show("home");
@@ -559,6 +562,7 @@ function toggleExtra() {
   }
   // Extra siempre arranca vacío. No se carga el almuerzo del supervisor.
   state.extraOn = true;
+  state.extraHold = false;
   store.clearMesa();
   speak(`Extra de ${currentLote().toLowerCase()}. Lista vacía. Escanee solo a quien falta.`);
   show("home");
@@ -1151,7 +1155,7 @@ function footer(active, extra = "") {
 }
 
 function lotePills() {
-  const extra = !!state.extraOn;
+  const extra = !!state.extraOn || !!state.extraHold;
   return `<div class="lote-pills" role="group" aria-label="Comida">
     <button type="button" class="${extra ? "" : "on"}" data-act="set-lote" data-id="Almuerzo">Almuerzo</button>
     <button type="button" class="extra${extra ? " on" : ""}" data-act="toggle-extra">Extra</button>
@@ -2010,6 +2014,7 @@ function finishEmergencyLogin(dni, nombreCompleto) {
   if (!parsed.apellido && !parsed.nombre && !parsed.nombreCompleto) return false;
   state.emergencyPending = false;
   state.extraOn = false;
+  state.extraHold = false;
   store.clearTurnoDia();
   store.clearMesa();
   showLoginGate({
@@ -2215,6 +2220,7 @@ function enterSession(person, { enviado = false, fecha, comida } = {}) {
     return;
   }
   state.extraOn = false;
+  state.extraHold = false;
   state.mesaQuery = "";
   state.mesaPage = 1;
   store.setTurnoDia({
@@ -2226,12 +2232,14 @@ function enterSession(person, { enviado = false, fecha, comida } = {}) {
   ensureWorkers();
   state.loggingIn = false;
   state.extraOn = false;
+  state.extraHold = false;
   state.lastSpeak = "";
   dismissAlert();
   store.clearMesa();
   show("home");
   if (enviado && !person.emergencia) {
     state.extraOn = false;
+    state.extraHold = false;
     store.clearMesa();
     speak("Hoy ya envió. Solo extra. La lista empieza vacía.", { flush: true });
     setScanLive("Ya envió. Pulse Extra. La lista inicia vacía.", false);
@@ -3042,7 +3050,10 @@ async function sendLista() {
   store.upsertCola(record);
   setMesa(mesa.map((p) => ({ ...p, status: "lista" })));
   for (const p of mesa) rememberDni(p);
-  if (extra) state.extraOn = false;
+  if (extra) {
+    state.extraOn = false;
+    state.extraHold = true;
+  }
   dismissAlert();
   refreshPendPill();
   if (state.view === "home") refreshHomeLock();
@@ -3583,6 +3594,11 @@ async function onClick(e) {
       toggleExtra();
       return;
     }
+    if (state.extraHold) {
+      state.extraHold = false;
+      if (state.view === "home") refreshHomeLock();
+      return;
+    }
     if (document.querySelector(".summary-modal")) {
       showSummaryModal();
       return;
@@ -3666,6 +3682,7 @@ async function onClick(e) {
     store.clearTurnoDia();
     state.emergencyPending = false;
     state.extraOn = false;
+    state.extraHold = false;
     speak("Turno cerrado. Se borraron los DNI guardados.");
     show("supervisor");
     return;

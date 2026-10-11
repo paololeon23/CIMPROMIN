@@ -2041,8 +2041,8 @@ body.modal-open .emerg-fab {
 .update-status.ok { color: #1f3d2a; }
 .fab-wrap {
   position: fixed;
-  right: 16px;
-  bottom: calc(96px + var(--safe-b));
+  right: 5px;
+  bottom: calc(82px + var(--safe-b));
   z-index: 30;
   display: flex;
   flex-direction: column;
