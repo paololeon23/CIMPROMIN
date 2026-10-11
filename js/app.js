@@ -2987,7 +2987,37 @@ function notifyUploaded(count) {
   }).catch(fallback);
 }
 
-async function sendLista() {
+function uniqueMesaPeople(list) {
+  const map = new Map();
+  for (const person of list || []) {
+    const id = normalizeDni(person?.id || person?.dni);
+    if (!id) continue;
+    const prev = map.get(id);
+    map.set(id, { ...(prev || {}), ...person, id, dni: id, menus: Math.max(menuQty(prev), menuQty(person)) });
+  }
+  return [...map.values()];
+}
+
+function sentExtraDnis() {
+  const day = todayKey(TZ);
+  const sid = normalizeDni(supervisor()?.dni || supervisor()?.id || "");
+  const out = new Set();
+  for (const row of store.getCola().concat(store.getHistorial())) {
+    const payload = row?.payload || {};
+    const isExtra = row?.type === "extra" || payload.extra === true;
+    if (!isExtra || row?.confirmed === false) continue;
+    if (payload.fecha_local !== day) continue;
+    const rowSid = normalizeDni(payload.supervisor_id || "");
+    if (sid && rowSid && rowSid !== sid) continue;
+    for (const person of payload.personas || []) {
+      const dni = normalizeDni(person?.dni || person?.id);
+      if (dni) out.add(dni);
+    }
+  }
+  return out;
+}
+
+function sendLista() {
   askUploadPermission();
   if (state.busy) return;
   state.busy = true;
@@ -3013,11 +3043,21 @@ async function sendLista() {
     speak("Nadie en el resumen");
     return;
   }
+  let people = uniqueMesaPeople(mesa);
+  if (extra) {
+    const sent = sentExtraDnis();
+    people = people.filter((person) => !sent.has(normalizeDni(person.id)));
+    if (!people.length) {
+      speak("Esas personas ya se enviaron.");
+      showAlert("Ya enviado", "Esas personas ya salieron en un extra. No se vuelven a mandar.");
+      return;
+    }
+  }
   const t = nowParts(TZ);
   const comida = currentLote();
   const existing = extra ? null : store.getCola().find((r) => r.type === "lista" && !r.payload?.extra && r.payload?.comida === comida);
   const sendId = extra ? uuid() : (existing?.payload?.send_id || existing?.payload?.lote_lista_id || uuid());
-  const n = mesaMealCount(mesa);
+  const n = mesaMealCount(people);
   const record = {
     clientId: extra ? `extra:${t.fecha}:${sendId}` : (existing?.clientId || `lista:${t.fecha}:${sendId}`),
     type: extra ? "extra" : "lista",
@@ -3036,7 +3076,7 @@ async function sendLista() {
       comida,
       comedor: currentComedor(),
       send_id: sendId,
-      personas: mesa.map((p) => ({
+      personas: people.map((p) => ({
         id: p.id,
         dni: p.id,
         apellido: p.apellido || "",

@@ -356,9 +356,8 @@ function workerSave(body) {
 
     var packT = ensurePersonSheet(ss, "Trabajadores");
     var packS = ensureSupervisorSheet(ss);
-    var written = 0;
     if (people.length) {
-      written = writePeople(packT, people, {
+      writePeople(packT, people, {
         fecha: fecha,
         hora: horaG,
         sid: sid,
@@ -371,9 +370,8 @@ function workerSave(body) {
         turno_campo: turnoCampo,
         extra: false,
         status: "confirmed"
-      }) || 0;
+      });
     }
-    if (written) n = written;
     appendSupervisor(packS, {
       fecha: fecha,
       hora: horaG,
@@ -855,20 +853,43 @@ function menuCopies(person, extra) {
   return n === 2 ? 2 : 1;
 }
 
+function activeCopiesByDni(pack, sid, fecha) {
+  var out = {};
+  var sh = pack.sh;
+  var last = sh.getLastRow();
+  if (last < 2) return out;
+  var lastCol = Math.max(sh.getLastColumn(), COLS_TRABAJADORES.length);
+  var start = Math.max(2, last - 3999);
+  var values = sh.getRange(start, 1, last - start + 1, lastCol).getValues();
+  for (var i = 0; i < values.length; i++) {
+    var row = values[i];
+    if (!fechaEs(val(pack, row, "fecha_local"), fecha)) continue;
+    if (onlyDni(val(pack, row, "supervisor_id")) !== sid) continue;
+    if (normStatus(val(pack, row, "status")) === "cancelled") continue;
+    var dni = onlyDni(val(pack, row, "trabajador_dni"));
+    if (!/^\d{8}$/.test(dni)) continue;
+    var copies = Number(val(pack, row, "comidas")) === 2 ? 2 : 1;
+    if (!out[dni] || copies === 2) out[dni] = copies === 2 ? 2 : (out[dni] || 1);
+  }
+  return out;
+}
+
 function writePeople(pack, people, meta) {
+  var existing = activeCopiesByDni(pack, meta.sid, meta.fecha);
   var rows = [];
   var extra = meta.extra === true;
   for (var i = 0; i < people.length; i++) {
     var w = people[i] || {};
+    var dni = onlyDni(w.id || w.dni);
+    if (!/^\d{8}$/.test(dni) || existing[dni]) continue;
     var parts = personNameParts(w);
     var copies = menuCopies(w, extra);
-    for (var c = 0; c < copies; c++) {
     rows.push(reservaRow(pack, {
       fecha: meta.fecha,
       hora: meta.hora,
       sid: meta.sid,
       sap: meta.sap,
-      dni: cell(w.id || w.dni, 12),
+      dni: dni,
       apellido: cell(parts.apellido, 80),
       nombre: cell(parts.nombre, 80),
       comida: meta.comida,
@@ -880,11 +901,52 @@ function writePeople(pack, people, meta) {
       status: meta.status || "confirmed",
       comidas: copies
     }));
-    }
+    existing[dni] = copies;
   }
   if (!rows.length) return 0;
   pack.sh.getRange(pack.sh.getLastRow() + 1, 1, rows.length, pack.width).setValues(rows);
   return rows.length;
+}
+
+function collapseDuplicatePeople(pack) {
+  var sh = pack.sh;
+  var last = sh.getLastRow();
+  if (last < 2 || !pack.map.trabajador_dni) return 0;
+  var lastCol = Math.max(sh.getLastColumn(), COLS_TRABAJADORES.length);
+  var values = sh.getRange(2, 1, last - 1, lastCol).getValues();
+  var seen = {};
+  var drop = [];
+  var comidasCol = pack.map.comidas;
+  for (var i = 0; i < values.length; i++) {
+    var row = values[i];
+    var dni = onlyDni(val(pack, row, "trabajador_dni"));
+    var sid = onlyDni(val(pack, row, "supervisor_id"));
+    var fecha = normFecha(val(pack, row, "fecha_local"));
+    if (!/^\d{8}$/.test(dni) || !fecha) continue;
+    var hora = val(pack, row, "hora_guardado");
+    var stamp = Object.prototype.toString.call(hora) === "[object Date]" && !isNaN(hora.getTime())
+      ? Utilities.formatDate(hora, TZ, "HH:mm:ss")
+      : String(hora || "").trim();
+    var key = [fecha, stamp, sid, dni, normStatus(val(pack, row, "status"))].join("|");
+    var copies = Number(val(pack, row, "comidas")) === 2 ? 2 : 1;
+    if (seen[key] == null) {
+      seen[key] = { index: i, copies: copies };
+      continue;
+    }
+    if (copies === 2) seen[key].copies = 2;
+    drop.push(i);
+  }
+  if (comidasCol) {
+    for (var k in seen) {
+      if (seen[k].copies !== 2) continue;
+      var keeper = seen[k].index;
+      if (Number(values[keeper][comidasCol - 1]) === 2) continue;
+      sh.getRange(keeper + 2, comidasCol).setValue(2);
+    }
+  }
+  drop.sort(function (a, b) { return b - a; });
+  for (var d = 0; d < drop.length; d++) sh.deleteRow(drop[d] + 2);
+  return drop.length;
 }
 
 function appendReserva(pack, rec) {
@@ -928,15 +990,21 @@ function countActiveMeals(pack, sid, fecha) {
   var lastCol = Math.max(sh.getLastColumn(), COLS_TRABAJADORES.length);
   var start = Math.max(2, last - 3999);
   var values = sh.getRange(start, 1, last - start + 1, lastCol).getValues();
-  var n = 0;
+  var byDni = {};
   for (var i = 0; i < values.length; i++) {
     var row = values[i];
     if (!fechaEs(val(pack, row, "fecha_local"), fecha)) continue;
     if (onlyDni(val(pack, row, "supervisor_id")) !== sid) continue;
     if (normStatus(val(pack, row, "status")) === "cancelled") continue;
-    if (!/^\d{8}$/.test(onlyDni(val(pack, row, "trabajador_dni")))) continue;
-    n += 1;
+    var dni = onlyDni(val(pack, row, "trabajador_dni"));
+    if (!/^\d{8}$/.test(dni)) continue;
+    var copies = Number(val(pack, row, "comidas")) === 2 ? 2 : 1;
+    if (!byDni[dni]) byDni[dni] = copies;
+    else if (byDni[dni] === 2 || copies === 2) byDni[dni] = 2;
+    else byDni[dni] = Math.min(2, byDni[dni] + 1);
   }
+  var n = 0;
+  for (var key in byDni) n += byDni[key];
   return n;
 }
 
@@ -974,12 +1042,7 @@ function refreshSupervisorTotal(ss, sid, fecha, delta) {
     stored = numTotal(val(pack, values[lastSid], "total_comidas"));
     hits.push(lastSid);
   }
-  var bump = Number(delta) || 0;
-  var total = stored;
-  if (bump > 0) total = Math.max(stored + bump, counted);
-  else if (bump < 0) total = Math.max(0, stored + bump);
-  else total = Math.max(counted, stored);
-  if (counted > total) total = counted;
+  var total = counted;
   for (var h = 0; h < hits.length; h++) {
     values[hits[h]][col - 1] = total;
   }
@@ -1599,4 +1662,6 @@ function setupSheets() {
   paintSheetHead(people.sh);
   paintSheetHead(extras.sh);
   paintSheetHead(supers.sh);
+  collapseDuplicatePeople(people);
+  collapseDuplicatePeople(extras);
 }
