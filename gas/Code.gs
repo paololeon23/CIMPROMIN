@@ -619,7 +619,7 @@ function patchSheetRows(pack, fecha, sid, dni, patch, peopleSheet) {
 
 function listReservas(desde, hasta) {
   var cache = CacheService.getScriptCache();
-  var key = "rsv3:" + desde + ":" + hasta;
+  var key = "rsv4:" + desde + ":" + hasta;
   var hit = cache.get(key);
   if (hit) {
     try { return JSON.parse(hit); } catch (e) { /* sigue */ }
@@ -693,7 +693,7 @@ function dedupeActivas(list) {
       continue;
     }
     var normal = !r.extra;
-    var key = r.dni + "|" + r.date + "|" + (normal ? "normal" : "extra");
+    var key = (r.supervisor_id || "") + "|" + r.dni + "|" + r.date + "|" + (normal ? "normal" : "extra");
     var copies = Number(r.comidas) === 2 ? 2 : 1;
     if (seen[key]) {
       var prev = seen[key];
