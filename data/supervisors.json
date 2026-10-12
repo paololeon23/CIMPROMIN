@@ -7,8 +7,8 @@
     "macroPartida": "COSTO DE COSECHA",
     "actividad": "SUPERVISOR DE COSECHA"
   },
-  "count": 92,
-  "updatedAt": "2026-10-08T13:16:00.000Z",
+  "count": 93,
+  "updatedAt": "2026-10-11T21:39:00.000Z",
   "byDni": {
     "18851808": {
       "nombre": "AGUIRRE NORIEGA MARCO ANTONIO",
@@ -649,6 +649,13 @@
     "74968381": {
       "nombre": "QUIROZ VEGA DARLIN JOEL",
       "cargo": "AUXILIAR DE CAMPO",
+      "celular": "",
+      "supervisorGlobal": "VERDE PINILLOS LUIS PABLITO",
+      "encargadoDni": "77795510"
+    },
+    "76357590": {
+      "nombre": "TRUJILLO MENDOZA ROSMEL KENYI",
+      "cargo": "SUPERVISOR DE COSECHA",
       "celular": "",
       "supervisorGlobal": "VERDE PINILLOS LUIS PABLITO",
       "encargadoDni": "77795510"
