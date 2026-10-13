@@ -1084,10 +1084,46 @@ function showDniModal() {
   </div>`);
 }
 
+function applyTempSexo(sexo) {
+  document.querySelectorAll("#fTempSexo .sexo-opt").forEach((el) => {
+    const on = !!sexo && el.dataset.sexo === sexo;
+    el.classList.toggle("on", on);
+    el.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
+function fillTempFromDni() {
+  const input = document.getElementById("tempDni");
+  const name = document.getElementById("tempNombre");
+  if (!input || !name) return;
+  const clean = String(input.value || "").replace(/\D/g, "").slice(0, 8);
+  if (input.value !== clean) input.value = clean;
+  const official = clean.length === 8 ? findOfficial(clean) : null;
+  if (official) {
+    name.value = displayName(official);
+    name.dataset.auto = "1";
+    applyTempSexo(personSexo(official));
+    document.getElementById("fTempDni")?.classList.remove("bad");
+    document.getElementById("fTempNom")?.classList.remove("bad");
+    if (personSexo(official)) document.getElementById("fTempSexo")?.classList.remove("bad");
+    return;
+  }
+  if (name.dataset.auto === "1") {
+    name.value = "";
+    delete name.dataset.auto;
+    applyTempSexo("");
+  }
+  if (clean.length === 8) document.getElementById("fTempDni")?.classList.remove("bad");
+}
+
 function showTempPersonModal() {
+  ensureWorkers().then(() => {
+    const input = document.getElementById("tempDni");
+    if (input && String(input.value || "").replace(/\D/g, "").length === 8) fillTempFromDni();
+  });
   openAlert(`<div class="modal-back" data-act="dismiss-alert">
     <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
-      ${sectionHead("Persona temporal", "No está en la base. DNI y nombre. Se guarda en este celular y se borra al cerrar sesión.")}
+      ${sectionHead("Persona temporal", "Escriba el DNI. Si está en la base, el nombre y el avatar se llenan solos. Si no está, el nombre es obligatorio.")}
       <div class="field" id="fTempDni">
         <label>DNI</label>
         <input id="tempDni" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="8 dígitos">
@@ -1275,6 +1311,15 @@ function filterPick(wrap, query) {
 }
 
 function onPickInput(e) {
+  if (e.target.id === "tempDni") {
+    fillTempFromDni();
+    return;
+  }
+  if (e.target.id === "tempNombre") {
+    delete e.target.dataset.auto;
+    if (String(e.target.value || "").trim()) document.getElementById("fTempNom")?.classList.remove("bad");
+    return;
+  }
   if (e.target.id === "dni-login") {
     const clean = String(e.target.value || "").replace(/\D/g, "").slice(0, 8);
     if (e.target.value !== clean) e.target.value = clean;
@@ -3533,15 +3578,17 @@ async function onClick(e) {
   }
   if (act === "save-temp-person") {
     const dni = normalizeDni(document.getElementById("tempDni")?.value || "");
-    const nombre = String(document.getElementById("tempNombre")?.value || "").replace(/\s+/g, " ").trim();
+    const typed = String(document.getElementById("tempNombre")?.value || "").replace(/\s+/g, " ").trim();
     const picked = document.querySelector(".sexo-opt.on")?.dataset.sexo || "";
     const official = /^\d{8}$/.test(dni) ? findOfficial(dni) : null;
+    const nombre = official ? (displayName(official) || typed) : typed;
     const sexo = personSexo(official) || (picked === "M" || picked === "F" ? picked : "");
-    document.getElementById("fTempDni")?.classList.toggle("bad", !/^\d{8}$/.test(dni));
-    document.getElementById("fTempNom")?.classList.toggle("bad", !nombre);
-    document.getElementById("fTempSexo")?.classList.toggle("bad", !sexo);
-    if (!/^\d{8}$/.test(dni) || !nombre || !sexo) {
-      speak(!sexo && dni && nombre ? "Elija hombre o mujer." : "Falta DNI o nombre.");
+    const dniOk = /^\d{8}$/.test(dni);
+    document.getElementById("fTempDni")?.classList.toggle("bad", !dniOk);
+    document.getElementById("fTempNom")?.classList.toggle("bad", dniOk && !official && !typed);
+    document.getElementById("fTempSexo")?.classList.toggle("bad", dniOk && !sexo);
+    if (!dniOk || !nombre || !sexo) {
+      speak(!dniOk ? "Falta el DNI." : (!nombre ? "Falta el nombre." : "Elija hombre o mujer."));
       return;
     }
     const parsed = nameParts({ nombreCompleto: nombre });

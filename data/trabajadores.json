@@ -32170,5 +32170,12 @@
         "sexo": "F",
         "cargo": "COSECHA",
         "fechaIngreso": "05/10/2026"
+    },
+    {
+        "dni": "75049955",
+        "nombre": "URQUIZO MEDINA DIANA LIZBETH",
+        "sexo": "F",
+        "cargo": "COSECHA",
+        "fechaIngreso": "13/10/2026"
     }
 ]
