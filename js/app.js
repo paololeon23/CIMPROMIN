@@ -581,7 +581,6 @@ function fabBlock() {
   return `<div class="fab-wrap">
     <div class="fab-menu" id="fab-menu" hidden>
       <button type="button" data-act="go-historial">Ver historial</button>
-      <button type="button" data-act="go-dni">DNI guardados</button>
       <button type="button" data-act="go-perfil">Perfil</button>
       <button type="button" data-act="go-ajustes">Ajustes</button>
     </div>
@@ -605,13 +604,23 @@ function horaMinutos(raw) {
 }
 
 function historialConfirmados() {
-  const sid = supervisor()?.dni || supervisor()?.id || "";
-  return store.getHistorial().filter((r) => {
-    if (r.type !== "lista" && r.type !== "extra") return false;
-    if (r.confirmed === false) return false;
-    if (sid && r.payload?.supervisor_id && r.payload.supervisor_id !== sid) return false;
-    return true;
-  });
+  const sid = normalizeDni(supervisor()?.dni || supervisor()?.id || "");
+  const seen = new Set();
+  const rows = [];
+  const take = (r, pending) => {
+    if (!r || (r.type !== "lista" && r.type !== "extra")) return;
+    if (!pending && r.confirmed === false) return;
+    const psid = normalizeDni(r.payload?.supervisor_id || "");
+    if (sid && psid && psid !== sid) return;
+    const id = histRecordId(r);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    rows.push(pending ? { ...r, pending: true } : r);
+  };
+  store.getHistorial().forEach((r) => take(r, false));
+  store.getCola().forEach((r) => take(r, true));
+  rows.sort((a, b) => (b.savedAt || b.createdAt || 0) - (a.savedAt || a.createdAt || 0));
+  return rows;
 }
 
 function histRecordId(r) {
@@ -656,6 +665,18 @@ function histPeopleBlock(r) {
   </div>`;
 }
 
+function histFecha(iso) {
+  const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : "—";
+}
+
+function histCantidad(r) {
+  const people = histPersonas(r);
+  if (people.length) return people.reduce((sum, person) => sum + menuQty(person), 0);
+  const n = Number(r.payload?.trabajadores_unicos);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 function showHistorialModal() {
   closeFab();
   const recs = historialConfirmados();
@@ -665,34 +686,37 @@ function showHistorialModal() {
   const slice = recs.slice(start, start + HIST_PAGE_SIZE);
   const openId = state.histOpen || "";
   if (openId && !slice.some((r) => histRecordId(r) === openId)) state.histOpen = "";
-  const today = todayKey(TZ);
   const rows = slice.map((r) => {
     const p = r.payload || {};
-    const n = p.trabajadores_unicos || histPersonas(r).length;
-    const who = `${n || "—"} ${n === 1 ? "solicitud" : "solicitudes"}`;
-    const hora = horaMinutos(p.hora_local);
-    const fecha = p.fecha_local && p.fecha_local !== today
-      ? String(p.fecha_local).slice(5).replace("-", "/")
-      : "";
-    const meta = [p.fundo || p.etapa || "—", p.comedor || "—", fecha, hora].filter(Boolean).join(" · ");
+    const n = histCantidad(r);
+    const hora = horaMinutos(p.hora_local) || "—";
+    const comida = p.comida || "Almuerzo";
+    const donde = [p.fundo || p.etapa, p.comedor].filter(Boolean).join(" · ") || "—";
     const id = histRecordId(r);
     const open = openId === id;
-    const badge = r.type === "extra" || p.extra ? "Extra" : (r.duplicate ? "Ya estaba" : "Confirmado");
+    const extra = r.type === "extra" || p.extra === true;
+    const badge = r.pending ? "Pendiente" : (extra ? "Extra" : "Lista");
+    const badgeClass = r.pending ? "now" : "ok";
     return `<div class="hist-item${open ? " open" : ""}">
       <button type="button" class="hist-row" data-act="toggle-hist" data-id="${esc(id)}" aria-expanded="${open ? "true" : "false"}">
         <div>
-          <b>${esc(who)}</b>
-          <div class="meta">${esc(meta)}</div>
+          <div class="hist-sum">
+            <span><small>Fecha</small><b>${esc(histFecha(p.fecha_local))}</b></span>
+            <span><small>Hora</small><b>${esc(hora)}</b></span>
+            <span><small>Cant.</small><b>${n}</b></span>
+            <span><small>Comida</small><b>${esc(comida)}</b></span>
+          </div>
+          <div class="meta">${esc(donde)}</div>
         </div>
-        <span class="st ok">${esc(badge)}</span>
+        <span class="st ${badgeClass}">${esc(badge)}</span>
         <span class="hist-chev" aria-hidden="true">${open ? "▾" : "▸"}</span>
       </button>
       ${open ? histPeopleBlock(r) : ""}
     </div>`;
-  }).join("") || `<p class="sub">Aún no hay envíos confirmados en este celular.</p>`;
+  }).join("") || `<p class="sub">Aún no hay envíos guardados en este celular.</p>`;
   openAlert(`<div class="modal-back" data-act="dismiss-alert">
     <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
-      ${sectionHead("Historial", "Solo este celular. Se borra a las 48 horas.")}
+      ${sectionHead("Historial", "Cada envío de este celular. Se borra a las 12 horas.")}
       <div class="hist-list">${rows}</div>
       ${pagerHtml(state.histPage, pages, "hist-page-prev", "hist-page-next")}
       <button class="btn ghost" data-act="dismiss-alert" type="button">Cerrar</button>
@@ -2399,6 +2423,40 @@ function showLoginGate(person) {
   requestAnimationFrame(tick);
 }
 
+function hideScanHit() {
+  const host = document.getElementById("scan-hit");
+  if (!host) return;
+  host.hidden = true;
+  host.innerHTML = "";
+  host.className = "hit-card";
+}
+
+function releaseQueueScreen(summary) {
+  const n = (summary?.sent || 0) + (summary?.duplicates || 0);
+  if (!n || (summary?.pending || 0) !== 0) return;
+  releaseMesaAfterSend(store.getHistorial().slice(0, n));
+  if (state.view === "home") refreshHomeLock();
+}
+
+function releaseMesaAfterSend(records) {
+  const sent = new Set();
+  for (const record of records || []) {
+    for (const person of record?.payload?.personas || []) {
+      const id = normalizeDni(person?.dni || person?.id);
+      if (id) sent.add(id);
+    }
+  }
+  if (!sent.size) return;
+  for (const id of sent) unlockWorkerScan(id);
+  const keep = getMesa().filter((person) => !sent.has(normalizeDni(person.id)));
+  if (keep.length !== getMesa().length) setMesa(keep);
+  hideScanHit();
+  hideScanToast();
+  setScanLive(isSendLocked() ? "Ya envió. Pulse Extra si alguien se olvidó o llegó tarde." : "Listo para el siguiente QR.", true);
+  state.mesaPage = 1;
+  if (state.view === "home") refreshMesaUi();
+}
+
 function showScanHit({ dni = "—", nombre = "—", cargo = "—", ok = true, note = "", stateLabel = "", sexo = "" }) {
   const host = document.getElementById("scan-hit");
   if (host) {
@@ -3032,11 +3090,19 @@ function notifyUploaded(count) {
   }).catch(fallback);
 }
 
+function postDni(raw) {
+  const d = normalizeDni(raw);
+  if (/^\d{8}$/.test(d)) return d;
+  const digits = String(raw ?? "").replace(/\D/g, "");
+  if (digits.length >= 6 && digits.length < 8) return digits.padStart(8, "0");
+  return d;
+}
+
 function uniqueMesaPeople(list) {
   const map = new Map();
   for (const person of list || []) {
-    const id = normalizeDni(person?.id || person?.dni);
-    if (!id) continue;
+    const id = postDni(person?.id || person?.dni);
+    if (!/^\d{8}$/.test(id)) continue;
     const prev = map.get(id);
     map.set(id, { ...(prev || {}), ...person, id, dni: id, menus: Math.max(menuQty(prev), menuQty(person)) });
   }
@@ -3110,7 +3176,7 @@ function sendLista() {
       fecha_local: t.fecha,
       hora_local: t.hora,
       timezone: TZ,
-      supervisor_id: s.dni || s.id,
+      supervisor_id: postDni(s.dni || s.id),
       supervisor_apellido: supervisorNombreCompleto(s),
       supervisor_apellido_nombre: supervisorNombreCompleto(s),
       hizo_pedido: true,
@@ -3121,14 +3187,17 @@ function sendLista() {
       comida,
       comedor: currentComedor(),
       send_id: sendId,
-      personas: people.map((p) => ({
-        id: p.id,
-        dni: p.id,
-        apellido: p.apellido || "",
-        nombre: p.nombre || "",
-        area: p.cargo || p.area || "",
-        menus: menuQty(p),
-      })),
+      personas: people.map((p) => {
+        const dni = postDni(p.id || p.dni);
+        return {
+          id: dni,
+          dni,
+          apellido: p.apellido || "",
+          nombre: p.nombre || "",
+          area: p.cargo || p.area || "",
+          menus: menuQty(p),
+        };
+      }),
     },
     createdAt: extra ? Date.now() : (existing?.createdAt || Date.now()),
   };
@@ -3149,9 +3218,7 @@ function sendLista() {
     ? (online ? `Extra. ${n} ${mealWord(comida, n)} para ${lugar}.` : `Sin señal. Extra guardado para ${lugar}.`)
     : (online ? `Se envió ${n} ${mealWord(comida, n)} a ${lugar}.` : `Sin señal. Almuerzo guardado para ${lugar}.`), { flush: true });
   saveAndSync(record).then(async (result) => {
-    if (result.status === "enviado") {
-      setMesa(getMesa().map((p) => ({ ...p, status: "enviado" })));
-    }
+    const delivered = result.status === "enviado" && pendingCount() === 0;
     refreshPendPill();
     if (state.view === "home") refreshHomeLock();
     if (!extra && result.duplicate) {
@@ -3175,6 +3242,7 @@ function sendLista() {
             comida: currentLote(),
             enviado: true,
           });
+          if (delivered) releaseMesaAfterSend([result.record || record]);
           if (state.view === "home") refreshHomeLock();
           speak("Ya se envió desde otro celular");
           showAlert(
@@ -3193,11 +3261,18 @@ function sendLista() {
         );
         return;
       }
+      if (delivered) releaseMesaAfterSend([result.record || record]);
       speak("Ya se envió desde otro celular");
       showAlert(
         "Ya envió",
         "Este supervisor ya mandó el almuerzo de hoy desde otro celular. Si falta alguien, pulse Extra."
       );
+      return;
+    }
+    if (delivered) releaseMesaAfterSend([result.record || record]);
+    else if (result.status === "enviado") {
+      setMesa(getMesa().map((p) => ({ ...p, status: "enviado" })));
+      if (state.view === "home") refreshMesaUi();
     }
   }).catch(() => {
     refreshPendPill();
@@ -3230,7 +3305,7 @@ async function saveCierre() {
       fecha_local: t.fecha,
       hora_local: t.hora,
       timezone: TZ,
-      supervisor_id: s.dni || s.id,
+      supervisor_id: postDni(s.dni || s.id),
       supervisor_apellido: supervisorNombreCompleto(s),
       supervisor_apellido_nombre: supervisorNombreCompleto(s),
       trabajadores_unicos: calc.trabajadores_unicos,
@@ -3315,9 +3390,15 @@ async function onClick(e) {
   }
   if (act === "flush-pend") {
     askUploadPermission();
+    const beforeIds = store.getCola().map((r) => r.clientId);
     const n = pendingCount();
     flushNow().then((s) => {
       refreshPendPill();
+      if (n > 0 && pendingCount() === 0 && ((s?.sent || 0) + (s?.duplicates || 0)) > 0) {
+        const done = store.getHistorial().filter((r) => beforeIds.includes(r.clientId));
+        releaseMesaAfterSend(done);
+        if (state.view === "home") refreshHomeLock();
+      }
       if (s?.sent) return;
       if (!n) return;
       if (!navigator.onLine) speak("Se envía cuando vuelva la señal.", { flush: true });
@@ -3416,14 +3497,6 @@ async function onClick(e) {
   if (act === "hist-people-next") {
     state.histPeoplePage = (state.histPeoplePage || 1) + 1;
     showHistorialModal();
-    return;
-  }
-  if (act === "go-dni") {
-    if (isSendLocked()) { warnLocked(); return; }
-    state.dniPage = 1;
-    state.dniQuery = "";
-    state.dniSelected = {};
-    showDniModal();
     return;
   }
   if (act === "dni-page-prev") {
@@ -3857,10 +3930,15 @@ async function boot() {
   window.addEventListener("online", () => {
     state.online = true;
     refreshPendPill();
+    const beforeIds = store.getCola().map((r) => r.clientId);
+    const n = pendingCount();
     flushQueue().then((s) => {
       if (s?.duplicates) speak("Hoy ya envió. Solo extra.");
       else if (s?.sent) speak("Enviado");
       refreshPendPill();
+      if (n > 0 && pendingCount() === 0 && ((s?.sent || 0) + (s?.duplicates || 0)) > 0) {
+        releaseMesaAfterSend(store.getHistorial().filter((r) => beforeIds.includes(r.clientId)));
+      }
       refreshHomeLock();
       if (supervisor()) syncTurnoDelDia().then(() => refreshHomeLock());
     });
@@ -3893,7 +3971,10 @@ async function boot() {
           show("supervisor", { replace: true });
           return;
         }
-        flushQueue().then(() => refreshPendPill());
+        flushQueue().then((summary) => {
+          refreshPendPill();
+          releaseQueueScreen(summary);
+        });
         if (supervisor()) syncTurnoDelDia().then(() => refreshHomeLock());
       });
     }
@@ -3905,7 +3986,10 @@ async function boot() {
   window.addEventListener("pageshow", () => {
     state.online = navigator.onLine;
     store.restoreSesion().then(() => {
-      flushQueue().then(() => refreshPendPill());
+      flushQueue().then((summary) => {
+        refreshPendPill();
+        releaseQueueScreen(summary);
+      });
       if (supervisor()) syncTurnoDelDia().then(() => refreshHomeLock());
     });
   });
@@ -3981,6 +4065,7 @@ async function boot() {
   }
   startAutoSync((summary) => {
     refreshPendPill();
+    releaseQueueScreen(summary);
     refreshHomeLock();
     if (summary?.sent) notifyUploaded(summary.sent);
   });

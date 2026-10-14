@@ -1,5 +1,5 @@
-export const APP_VERSION = "1.3.86";
-export const CACHE_NAME = "cocina-qb-v246";
+export const APP_VERSION = "1.3.92";
+export const CACHE_NAME = "cocina-qb-v252";
 export const APP_ASSETS = [
   "./",
   "./index.html",
@@ -26,7 +26,7 @@ export const APP_ASSETS = [
   "./icons/apple-touch-icon.png",
 ];
 export const TZ = "America/Lima";
-export const HISTORY_TTL_MS = 48 * 60 * 60 * 1000;
+export const HISTORY_TTL_MS = 12 * 60 * 60 * 1000;
 
 export const STORAGE_KEYS = {
   cola: "cola_pendiente",

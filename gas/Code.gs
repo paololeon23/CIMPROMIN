@@ -38,7 +38,6 @@
  */
 
 var CACHE_TTL_SEC = 21600;
-var ADMIN_CACHE_SEC = 4;
 var APP_VERSION = "1.4.4";
 var TZ = "America/Lima";
 
@@ -266,7 +265,7 @@ function workerSave(body) {
     var fechaHoy = limaFecha();
     var fechaIn = String(p.fecha_local || "").slice(0, 10);
     var fecha = fechaIn === fechaHoy ? fechaIn : fechaHoy;
-    var sid = String(p.supervisor_id || "").replace(/\D/g, "").slice(0, 8);
+    var sid = onlyDni(p.supervisor_id || "");
     if (!/^\d{8}$/.test(sid)) {
       return jsonOut({ ok: false, error: "sesion_invalida" });
     }
@@ -614,18 +613,17 @@ function patchSheetRows(pack, fecha, sid, dni, patch, peopleSheet) {
       dirty = true;
     }
     n += 1;
+    lockRowDni(pack, row);
   }
-  if (dirty) sh.getRange(start, 1, values.length, lastCol).setValues(values);
+  if (dirty) {
+    for (var r = 0; r < values.length; r++) lockRowDni(pack, values[r]);
+    stampDniColumns(sh, pack, start, values.length);
+    sh.getRange(start, 1, values.length, lastCol).setValues(values);
+  }
   return n;
 }
 
 function listReservas(desde, hasta) {
-  var cache = CacheService.getScriptCache();
-  var key = "rsv4:" + desde + ":" + hasta;
-  var hit = cache.get(key);
-  if (hit) {
-    try { return JSON.parse(hit); } catch (e) { /* sigue */ }
-  }
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var list = [];
   var people = ensurePersonSheet(ss, "Trabajadores");
@@ -638,7 +636,6 @@ function listReservas(desde, hasta) {
     list = list.concat(readSheetReservas(extras, true, desde, hasta));
   }
   list = dedupeActivas(list);
-  try { cache.put(key, JSON.stringify(list), ADMIN_CACHE_SEC); } catch (e2) { /* ignore */ }
   return list;
 }
 
@@ -946,7 +943,9 @@ function writePeople(pack, people, meta) {
     existing[dni] = copies;
   }
   if (!rows.length) return 0;
-  pack.sh.getRange(pack.sh.getLastRow() + 1, 1, rows.length, pack.width).setValues(rows);
+  var writeAt = pack.sh.getLastRow() + 1;
+  stampDniColumns(pack.sh, pack, writeAt, rows.length);
+  pack.sh.getRange(writeAt, 1, rows.length, pack.width).setValues(rows);
   return rows.length;
 }
 
@@ -992,11 +991,15 @@ function collapseDuplicatePeople(pack) {
 }
 
 function appendReserva(pack, rec) {
-  pack.sh.getRange(pack.sh.getLastRow() + 1, 1, 1, pack.width).setValues([reservaRow(pack, rec)]);
+  var at = pack.sh.getLastRow() + 1;
+  stampDniColumns(pack.sh, pack, at, 1);
+  pack.sh.getRange(at, 1, 1, pack.width).setValues([reservaRow(pack, rec)]);
 }
 
 function appendSupervisor(pack, rec) {
-  pack.sh.getRange(pack.sh.getLastRow() + 1, 1, 1, pack.width).setValues([supervisorRow(pack, rec)]);
+  var at = pack.sh.getLastRow() + 1;
+  stampDniColumns(pack.sh, pack, at, 1);
+  pack.sh.getRange(at, 1, 1, pack.width).setValues([supervisorRow(pack, rec)]);
 }
 
 function sidForWorkerDay(ss, dni, fecha) {
@@ -1087,8 +1090,13 @@ function refreshSupervisorTotal(ss, sid, fecha, delta) {
   var total = counted;
   for (var h = 0; h < hits.length; h++) {
     values[hits[h]][col - 1] = total;
+    lockRowDni(pack, values[hits[h]]);
   }
-  if (hits.length) sh.getRange(start, 1, values.length, lastCol).setValues(values);
+  if (hits.length) {
+    for (var r = 0; r < values.length; r++) lockRowDni(pack, values[r]);
+    stampDniColumns(sh, pack, start, values.length);
+    sh.getRange(start, 1, values.length, lastCol).setValues(values);
+  }
   return total;
 }
 
@@ -1122,7 +1130,7 @@ function supervisorRow(pack, rec) {
   for (var i = 0; i < pack.width; i++) row.push("");
   setCol(pack, row, "fecha_local", fechaCell(rec.fecha));
   setCol(pack, row, "hora_guardado", rec.hora);
-  setCol(pack, row, "supervisor_id", rec.sid);
+  setCol(pack, row, "supervisor_id", dniCell(rec.sid));
   setCol(pack, row, "supervisor_apellido_nombre", rec.sap);
   setCol(pack, row, "comida", rec.comida);
   setCol(pack, row, "comedor", rec.comedor);
@@ -1139,9 +1147,9 @@ function reservaRow(pack, rec) {
   for (var i = 0; i < pack.width; i++) row.push("");
   setCol(pack, row, "fecha_local", fechaCell(rec.fecha));
   setCol(pack, row, "hora_guardado", rec.hora);
-  setCol(pack, row, "supervisor_id", rec.sid);
+  setCol(pack, row, "supervisor_id", dniCell(rec.sid));
   setCol(pack, row, "supervisor_apellido_nombre", rec.sap);
-  setCol(pack, row, "trabajador_dni", rec.dni);
+  setCol(pack, row, "trabajador_dni", dniCell(rec.dni));
   setCol(pack, row, "trabajador_apellido", rec.apellido);
   setCol(pack, row, "trabajador_nombre", rec.nombre);
   setCol(pack, row, "comida", rec.comida);
@@ -1577,15 +1585,56 @@ function uniquePeople(people) {
     var d = onlyDni(w.dni || w.id);
     if (!/^\d{8}$/.test(d) || seen[d]) continue;
     seen[d] = true;
-    out.push(w);
+    var copy = {};
+    for (var k in w) copy[k] = w[k];
+    copy.dni = d;
+    copy.id = d;
+    out.push(copy);
   }
   return out;
 }
 
 function onlyDni(raw) {
+  if (typeof raw === "number" && isFinite(raw)) raw = String(Math.round(raw));
   var s = String(raw == null ? "" : raw).replace(/\D/g, "");
-  if (s.length >= 8) return s.slice(0, 8);
+  if (s.length > 8) s = s.slice(0, 8);
+  if (s.length >= 6 && s.length < 8) s = ("00000000" + s).slice(-8);
   return s;
+}
+
+function dniCell(raw) {
+  var d = onlyDni(raw);
+  return /^\d{8}$/.test(d) ? "'" + d : d;
+}
+
+function dniColumns(pack) {
+  var cols = [];
+  if (pack && pack.map) {
+    if (pack.map.trabajador_dni) cols.push(pack.map.trabajador_dni);
+    if (pack.map.supervisor_id) cols.push(pack.map.supervisor_id);
+  }
+  return cols;
+}
+
+function stampDniColumns(sh, pack, startRow, rowCount) {
+  if (!sh || startRow < 2 || rowCount < 1) return;
+  var cols = dniColumns(pack);
+  for (var i = 0; i < cols.length; i++) {
+    sh.getRange(startRow, cols[i], rowCount, 1).setNumberFormat("@");
+  }
+  SpreadsheetApp.flush();
+}
+
+function lockRowDni(pack, row) {
+  if (!row) return row;
+  var cols = dniColumns(pack);
+  for (var i = 0; i < cols.length; i++) {
+    var idx = cols[i] - 1;
+    if (idx < 0 || idx >= row.length) continue;
+    var d = onlyDni(row[idx]);
+    if (/^\d{8}$/.test(d)) row[idx] = dniCell(d);
+  }
+  return row;
 }
 
 function personNameParts(w) {
