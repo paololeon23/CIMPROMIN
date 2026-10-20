@@ -3,7 +3,7 @@ import { bindAppHeight, bindFieldLock, isFieldDevice, preventBounce } from "./de
 import { recordsOfToday, store } from "./store.js";
 import { onVoiceState, setVoiceEnabled, speak, speakPersonName, prepareSpeakName, unlockVoice, voiceEnabled, isSpeaking } from "./voice.js";
 import { computeHeadcount } from "./calc.js";
-import { armBackgroundSync, checkTurno, flushNow, flushQueue, pingServer, saveAndSync, startAutoSync } from "./sync.js";
+import { armBackgroundSync, checkTurno, flushNow, flushQueue, isClientInflight, pingServer, saveAndSync, startAutoSync } from "./sync.js";
 import { FieldScanner } from "./scanner.js";
 
 const scanner = new FieldScanner();
@@ -82,14 +82,14 @@ async function installApp() {
     openAlert(`<div class="modal-back" data-act="dismiss-alert">
       <div class="modal" role="dialog" aria-modal="true">
         <img class="install-ico" src="./icons/icon-192.png" alt="" />
-        <h3>Solicitud de almuerzo</h3>
-        <p>En Safari: toque Compartir y luego Agregar a pantalla de inicio. El nombre es Solicitud de almuerzo.</p>
+        <h3>Tareo de personal</h3>
+        <p>En Safari: toque Compartir y luego Agregar a pantalla de inicio. El nombre es Tareo.</p>
         <button class="btn" data-act="dismiss-alert" type="button">Entendido</button>
       </div>
     </div>`);
     return;
   }
-  showAlert("Instalar", "En el menú del navegador elija Instalar app o Agregar a pantalla de inicio. El nombre es Solicitud de almuerzo.");
+  showAlert("Instalar", "En el menú del navegador elija Instalar app o Agregar a pantalla de inicio. El nombre es Tareo.");
 }
 const state = {
   view: "boot",
@@ -125,6 +125,13 @@ const state = {
   emergencyPending: false,
   extraOn: false,
   extraHold: false,
+  lunchDni: "",
+  lunchClase: "",
+  retiroDni: "",
+  retiroStamp: null,
+  lunchHold: false,
+  lunchTimer: 0,
+  lunchHablado: "",
   admin: false,
   logoTaps: 0,
   mesaPage: 1,
@@ -136,6 +143,7 @@ const state = {
   histOpen: "",
   histPeoplePage: 1,
   histPeopleQuery: "",
+  histFecha: "",
   swGuardUntil: 0,
   handlingScan: false,
   isProcessing: false,
@@ -375,8 +383,8 @@ function statusPills() {
 function appBar({ title, sub = "", back = "", progress = null } = {}) {
   const lead = back
     ? `<button class="back" data-act="${esc(back)}" type="button" aria-label="Volver"><span>‹</span></button>`
-    : `<button class="brand-mark" data-act="logo-tap" type="button" aria-label="Q Berries">
-        <img src="./assets/logo-qberries.png" alt="" />
+    : `<button class="brand-mark" data-act="logo-tap" type="button" aria-label="CIMPROMIN">
+        <img src="./assets/CIMPROMIN_alta_calidad.png" alt="" />
       </button>`;
   const bar = progress == null
     ? ""
@@ -385,8 +393,8 @@ function appBar({ title, sub = "", back = "", progress = null } = {}) {
     <div class="appbar-row">
       <div class="appbar-lead">${lead}</div>
       <div class="appbar-titles">
-        <span class="brand-kicker">Q BERRIES</span>
-        <h1>${esc(title || "Solicitud de almuerzo")}</h1>
+        <span class="brand-kicker">CIMPROMIN</span>
+        <h1>${esc(title || "Tareo")}</h1>
         ${sub ? `<p>${esc(sub)}</p>` : ""}
       </div>
       ${statusPills()}
@@ -533,17 +541,19 @@ function refreshHomeLock() {
   if (mealBtn) mealBtn.classList.toggle("on", !showExtra);
   const send = document.querySelector('[data-act="go-summary"]');
   if (send) send.disabled = !getMesa().length || locked;
+  paintTareoHoy();
   refreshPendPill();
 }
 
 function isSendLocked() {
-  return hasNormalSend() && !state.extraOn;
+  // Tareo: no frenar el turno después de un envío. Eso era de la solicitud de almuerzo.
+  return false;
 }
 
 function warnLocked() {
   showAlert(
     "Ya envió",
-    `El ${currentLote().toLowerCase()} de hoy ya se envió. Pulse Extra si alguien se olvidó o llegó tarde.`
+    `El tareo de hoy ya se envió. Pulse Extra si alguien se olvidó o llegó tarde.`
   );
 }
 
@@ -557,14 +567,14 @@ function toggleExtra() {
     return;
   }
   if (!hasSavedSend()) {
-    showAlert("Todavía no", "Primero envíe el almuerzo del turno. Después puede mandar extras, también sin señal.");
+    showAlert("Todavía no", "Primero envíe el tareo del turno. Después puede mandar extras, también sin señal.");
     return;
   }
   // Extra siempre arranca vacío. No se carga el almuerzo del supervisor.
   state.extraOn = true;
   state.extraHold = false;
   store.clearMesa();
-  speak(`Extra de ${currentLote().toLowerCase()}. Lista vacía. Escanee solo a quien falta.`);
+  speak("Tareo extra. Lista vacía. Escanee solo a quien falta.");
   show("home");
   setScanLive("Extra: lista vacía. Acerca el QR de quien falta.", true);
 }
@@ -677,48 +687,139 @@ function histCantidad(r) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+function fechaLarga(iso) {
+  const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return histFecha(iso);
+  const date = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  const dias = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+  return `${dias[date.getUTCDay()]} ${m[3]}/${m[2]}/${m[1]}`;
+}
+
+function asistenciasPorFecha() {
+  const byDate = new Map();
+  for (const mark of store.getJornada()) {
+    const dni = normalizeDni(mark?.dni);
+    if (!mark?.fecha || !dni) continue;
+    if (!byDate.has(mark.fecha)) byDate.set(mark.fecha, new Map());
+    const people = byDate.get(mark.fecha);
+    if (!people.has(dni)) {
+      people.set(dni, {
+        dni,
+        apellido: mark.apellido || "",
+        nombre: mark.nombre || "",
+        cargo: mark.cargo || "",
+        marks: [],
+      });
+    }
+    const person = people.get(dni);
+    if (mark.apellido) person.apellido = mark.apellido;
+    if (mark.nombre) person.nombre = mark.nombre;
+    if (mark.cargo) person.cargo = mark.cargo;
+    person.marks.push(mark);
+  }
+  return [...byDate.entries()]
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([fecha, people]) => ({
+      fecha,
+      personas: [...people.values()].map((person) => ({
+        ...person,
+        marks: person.marks.sort((a, b) => (a.at || 0) - (b.at || 0)),
+      })).sort((a, b) => String(a.apellido).localeCompare(String(b.apellido), "es")),
+    }));
+}
+
+function fechasVisibles(dias) {
+  const elegida = String(state.histFecha || "");
+  if (!elegida) return dias.slice(0, 3);
+  const idx = dias.findIndex((dia) => dia.fecha === elegida);
+  if (idx < 0) return [];
+  return dias.slice(idx, idx + 3);
+}
+
+function coincidePersona(person, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return true;
+  const blob = `${person.apellido || ""} ${person.nombre || ""} ${person.dni || ""}`.toLowerCase();
+  return q.split(/\s+/).every((part) => blob.includes(part));
+}
+
+function marcasFila(person) {
+  return person.marks.map((mark) => {
+    const salida = mark.tipo === "salida";
+    return `<span class="jornada-line ${salida ? "out" : "in"}"><i>${salida ? "Salida" : "Entrada"}</i><b>${horaMinutos(mark.hora)}</b></span>`;
+  }).join("");
+}
+
 function showHistorialModal() {
   closeFab();
-  const recs = historialConfirmados();
-  const pages = Math.max(1, Math.ceil(recs.length / HIST_PAGE_SIZE));
-  state.histPage = Math.min(Math.max(1, state.histPage || 1), pages);
-  const start = (state.histPage - 1) * HIST_PAGE_SIZE;
-  const slice = recs.slice(start, start + HIST_PAGE_SIZE);
+  const dias = asistenciasPorFecha();
+  const query = String(state.histPeopleQuery || "").trim();
+  const elegida = String(state.histFecha || "");
+  const visibles = fechasVisibles(dias);
   const openId = state.histOpen || "";
-  if (openId && !slice.some((r) => histRecordId(r) === openId)) state.histOpen = "";
-  const rows = slice.map((r) => {
-    const p = r.payload || {};
-    const n = histCantidad(r);
-    const hora = horaMinutos(p.hora_local) || "—";
-    const comida = p.comida || "Almuerzo";
-    const donde = [p.fundo || p.etapa, p.comedor].filter(Boolean).join(" · ") || "—";
-    const id = histRecordId(r);
-    const open = openId === id;
-    const extra = r.type === "extra" || p.extra === true;
-    const badge = r.pending ? "Pendiente" : (extra ? "Extra" : "Lista");
-    const badgeClass = r.pending ? "now" : "ok";
-    return `<div class="hist-item${open ? " open" : ""}">
-      <button type="button" class="hist-row" data-act="toggle-hist" data-id="${esc(id)}" aria-expanded="${open ? "true" : "false"}">
+  let body = "";
+  if (query) {
+    const hits = [];
+    for (const dia of dias) {
+      for (const person of dia.personas) {
+        if (coincidePersona(person, query)) hits.push({ ...person, fecha: dia.fecha });
+      }
+    }
+    body = hits.map((person) => (
+      `<div class="hist-person">
         <div>
-          <div class="hist-sum">
-            <span><small>Fecha</small><b>${esc(histFecha(p.fecha_local))}</b></span>
-            <span><small>Hora</small><b>${esc(hora)}</b></span>
-            <span><small>Cant.</small><b>${n}</b></span>
-            <span><small>Comida</small><b>${esc(comida)}</b></span>
-          </div>
-          <div class="meta">${esc(donde)}</div>
+          <b>${esc(nombreFila(person))}</b>
+          <div class="meta">DNI ${esc(person.dni)}</div>
+          <div class="meta">${esc(fechaLarga(person.fecha))}</div>
+          <div class="jornada">${marcasFila(person)}</div>
         </div>
-        <span class="st ${badgeClass}">${esc(badge)}</span>
-        <span class="hist-chev" aria-hidden="true">${open ? "▾" : "▸"}</span>
-      </button>
-      ${open ? histPeopleBlock(r) : ""}
-    </div>`;
-  }).join("") || `<p class="sub">Aún no hay envíos guardados en este celular.</p>`;
+      </div>`
+    )).join("") || `<p class="sub">Nadie coincide con esa búsqueda.</p>`;
+  } else if (elegida && !visibles.length) {
+    body = `<p class="sub">Nadie asistió el ${esc(fechaLarga(elegida))}.</p>`;
+  } else if (!dias.length) {
+    body = `<p class="sub">Aún no hay asistencia registrada.</p>`;
+  } else {
+    body = visibles.map((dia) => {
+      const n = dia.personas.length;
+      const open = openId === dia.fecha;
+      const people = dia.personas.map((person) => (
+        `<div class="hist-person">
+          <div>
+            <b>${esc(nombreFila(person))}</b>
+            <div class="meta">DNI ${esc(person.dni)}${person.cargo ? ` · ${esc(person.cargo)}` : ""}</div>
+            <div class="jornada">${marcasFila(person)}</div>
+          </div>
+        </div>`
+      )).join("");
+      return `<div class="hist-item${open ? " open" : ""}">
+        <button type="button" class="asist-day" data-act="toggle-hist" data-id="${esc(dia.fecha)}" aria-expanded="${open ? "true" : "false"}">
+          <div>
+            <b>${esc(fechaLarga(dia.fecha))}</b>
+            <span>${n} ${n === 1 ? "persona" : "personas"}</span>
+          </div>
+          <b class="asist-n">${n}</b>
+        </button>
+        ${open ? `<div class="asist-people">${people}</div>` : ""}
+      </div>`;
+    }).join("");
+  }
   openAlert(`<div class="modal-back" data-act="dismiss-alert">
     <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
-      ${sectionHead("Historial", "Cada envío de este celular. Se borra a las 12 horas.")}
-      <div class="hist-list">${rows}</div>
-      ${pagerHtml(state.histPage, pages, "hist-page-prev", "hist-page-next")}
+      ${sectionHead("Historial", "Asistencia por fecha. Busque a una persona para ver si vino.")}
+      <div class="asist-tools">
+        <label class="asist-cal">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M3 10h18M8 3v4M16 3v4"/></svg>
+          <span>${elegida ? esc(fechaLarga(elegida)) : "Últimas 3 fechas"}</span>
+          <input id="hist-fecha" type="date" value="${esc(elegida)}" max="${esc(todayKey(TZ))}" aria-label="Elegir fecha">
+        </label>
+        ${elegida ? `<button class="asist-clear" data-act="hist-fechas-recientes" type="button">Últimas 3</button>` : ""}
+      </div>
+      <div class="field asist-search">
+        <label>Buscar persona</label>
+        <input id="hist-search" type="search" autocomplete="off" placeholder="Nombre o DNI" value="${esc(query)}">
+      </div>
+      <div class="hist-list">${body}</div>
       <button class="btn ghost" data-act="dismiss-alert" type="button">Cerrar</button>
     </div>
   </div>`);
@@ -735,14 +836,19 @@ function focusHistSearch() {
 function showPerfilModal() {
   closeFab();
   const s = supervisor();
-  const names = nameParts(s || {});
   openAlert(`<div class="modal-back" data-act="dismiss-alert">
-    <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
-      ${sectionHead("Perfil", s?.emergencia ? "Supervisor de emergencia. Eres responsable de pedir la comida." : "Supervisor del turno.")}
-      <p class="hit-dni">DNI ${esc(s?.dni || s?.id || "—")}</p>
-      <h3 class="hit-name">${esc(twoApellidos(s) || "—")}</h3>
-      <p class="hit-cargo">${esc([names.nombre, s?.cargo].filter(Boolean).join(" · ") || "—")}</p>
-      <div class="footer-actions" style="margin-top:18px">
+    <div class="modal summary-modal perfil" role="dialog" aria-modal="true" data-act="stay">
+      <header class="perfil-head">
+        <p>Perfil</p>
+        <h2>${esc(nombreFila(s) || "—")}</h2>
+      </header>
+      <div class="perfil-card">
+        ${avatarHtml(s || {}, "lg")}
+        <p class="perfil-dni">DNI ${esc(s?.dni || s?.id || "—")}</p>
+        <p class="perfil-cargo">${esc(s?.cargo || "—")}</p>
+        <span class="perfil-rol">${s?.emergencia ? "Jefe de emergencia" : "Jefe del turno"}</span>
+      </div>
+      <div class="footer-actions">
         <button class="btn ghost" data-act="dismiss-alert" type="button">Cerrar</button>
         <button class="btn" data-act="ask-logout" type="button">Cerrar sesión</button>
       </div>
@@ -1108,14 +1214,6 @@ function showDniModal() {
   </div>`);
 }
 
-function applyTempSexo(sexo) {
-  document.querySelectorAll("#fTempSexo .sexo-opt").forEach((el) => {
-    const on = !!sexo && el.dataset.sexo === sexo;
-    el.classList.toggle("on", on);
-    el.setAttribute("aria-pressed", on ? "true" : "false");
-  });
-}
-
 function fillTempFromDni() {
   const input = document.getElementById("tempDni");
   const name = document.getElementById("tempNombre");
@@ -1126,16 +1224,13 @@ function fillTempFromDni() {
   if (official) {
     name.value = displayName(official);
     name.dataset.auto = "1";
-    applyTempSexo(personSexo(official));
     document.getElementById("fTempDni")?.classList.remove("bad");
     document.getElementById("fTempNom")?.classList.remove("bad");
-    if (personSexo(official)) document.getElementById("fTempSexo")?.classList.remove("bad");
     return;
   }
   if (name.dataset.auto === "1") {
     name.value = "";
     delete name.dataset.auto;
-    applyTempSexo("");
   }
   if (clean.length === 8) document.getElementById("fTempDni")?.classList.remove("bad");
 }
@@ -1147,7 +1242,7 @@ function showTempPersonModal() {
   });
   openAlert(`<div class="modal-back" data-act="dismiss-alert">
     <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
-      ${sectionHead("Persona temporal", "Escriba el DNI. Si está en la base, el nombre y el avatar se llenan solos. Si no está, el nombre es obligatorio.")}
+      ${sectionHead("Persona temporal", "Escriba el DNI. Si está en la base, el nombre se llena solo. Si no está, el nombre es obligatorio.")}
       <div class="field" id="fTempDni">
         <label>DNI</label>
         <input id="tempDni" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="8 dígitos">
@@ -1155,20 +1250,6 @@ function showTempPersonModal() {
       <div class="field" id="fTempNom">
         <label>Nombre</label>
         <input id="tempNombre" autocomplete="off" placeholder="Apellidos y nombres" autocapitalize="characters">
-      </div>
-      <div class="field" id="fTempSexo">
-        <label>Avatar</label>
-        <div class="sexo-pick">
-          <button type="button" class="sexo-opt" data-act="pick-sexo" data-sexo="M">
-            <img src="./assets/hombre.png" alt="" width="72" height="72" decoding="async">
-            <span>Hombre</span>
-          </button>
-          <button type="button" class="sexo-opt" data-act="pick-sexo" data-sexo="F">
-            <img src="./assets/mujer.png" alt="" width="72" height="72" decoding="async">
-            <span>Mujer</span>
-          </button>
-        </div>
-        <span class="hint">Elija hombre o mujer.</span>
       </div>
       <div class="footer-actions" style="margin-top:8px">
         <button class="btn ghost" data-act="dismiss-alert" type="button">Cerrar</button>
@@ -1214,10 +1295,43 @@ function footer(active, extra = "") {
   return extra ? `<footer class="footer">${extra}</footer>` : "";
 }
 
+function tareadosHoy() {
+  const ids = new Set();
+  const add = (raw) => {
+    const id = normalizeDni(raw);
+    if (id) ids.add(id);
+  };
+  for (const person of getMesa()) add(person.id || person.dni);
+  const day = todayKey(TZ);
+  const sid = normalizeDni(supervisor()?.dni || supervisor()?.id || "");
+  for (const row of store.getCola().concat(store.getHistorial())) {
+    if (!row || (row.type !== "lista" && row.type !== "extra")) continue;
+    if (row.confirmed === false) continue;
+    const payload = row.payload || {};
+    if (payload.fecha_local !== day) continue;
+    const rowSid = normalizeDni(payload.supervisor_id || "");
+    if (sid && rowSid && rowSid !== sid) continue;
+    for (const person of payload.personas || []) add(person?.dni || person?.id);
+  }
+  return ids.size;
+}
+
+function paintTareoHoy() {
+  const n = tareadosHoy();
+  const num = document.getElementById("tareo-hoy-num");
+  const label = document.getElementById("tareo-hoy-label");
+  if (num) num.textContent = String(n);
+  if (label) label.textContent = n === 1 ? "persona tareada hoy" : "personas tareadas hoy";
+}
+
 function lotePills() {
   const extra = !!state.extraOn || !!state.extraHold;
-  return `<div class="lote-pills" role="group" aria-label="Comida">
-    <button type="button" class="${extra ? "" : "on"}" data-act="set-lote" data-id="Almuerzo">Almuerzo</button>
+  const n = tareadosHoy();
+  return `<div class="lote-pills" role="group" aria-label="Tareo de hoy">
+    <div class="tareo-hoy-count" aria-live="polite">
+      <b id="tareo-hoy-num">${n}</b>
+      <span id="tareo-hoy-label">${n === 1 ? "persona tareada hoy" : "personas tareadas hoy"}</span>
+    </div>
     <button type="button" class="extra${extra ? " on" : ""}" data-act="toggle-extra">Extra</button>
   </div>`;
 }
@@ -1226,10 +1340,10 @@ function loteCard() {
   const locked = isSendLocked();
   const extra = !!state.extraOn;
   return `<section class="section-card">
-    ${extra ? `<p class="extra-note">Modo extra activo. Se olvidó o llegó tarde. Va a Comidas extras.</p>` : ""}
-    ${locked ? `<p class="extra-note">Ya envió el almuerzo. Pulse Extra si falta alguien.</p>` : ""}
+    ${extra ? `<p class="extra-note">Modo extra activo. Se olvidó o llegó tarde.</p>` : ""}
+    ${locked ? `<p class="extra-note">Ya envió el tareo. Pulse Extra si falta alguien.</p>` : ""}
     ${!locked && !extra && !navigator.onLine ? `<p class="extra-note">Sin señal. Puede escanear y enviar.</p>` : ""}
-    ${sectionHead("Turno", extra ? "Escanee solo a quien falta. Entra como extra." : "Almuerzo o Extra. Después presente el QR de cada persona.")}
+    ${sectionHead("Turno", extra ? "Solo quien falta. Entra como extra." : "Jornada del turno. Luego identifique a cada persona.")}
     ${lotePills()}
   </section>`;
 }
@@ -1362,8 +1476,14 @@ function onPickInput(e) {
     }
     return;
   }
+  if (e.target.id === "hist-fecha") {
+    state.histFecha = String(e.target.value || "");
+    state.histOpen = state.histFecha;
+    showHistorialModal();
+    return;
+  }
   if (e.target.id === "hist-search") {
-    state.histPeopleQuery = e.target.value.replace(/\D/g, "").slice(0, 8);
+    state.histPeopleQuery = String(e.target.value || "").slice(0, 48);
     state.histPeoplePage = 1;
     showHistorialModal();
     focusHistSearch();
@@ -1392,19 +1512,13 @@ function authLabel() {
   return twoApellidos(s) || s.apellido || s.nombreCompleto || "—";
 }
 
-function mealWord(lote, n) {
-  const map = {
-    Desayuno: ["desayuno", "desayunos"],
-    Almuerzo: ["almuerzo", "almuerzos"],
-    Cena: ["cena", "cenas"],
-  };
-  const pair = map[lote] || ["pedido", "pedidos"];
-  return n === 1 ? pair[0] : pair[1];
+function mealWord(_lote, n) {
+  return n === 1 ? "registro" : "registros";
 }
 
 function comedorPills() {
   const cur = currentComedor();
-  return `<div class="lote-pills comedor-pills" role="group" aria-label="Comedor">
+  return `<div class="lote-pills comedor-pills" role="group" aria-label="Lugar">
     ${comedores().map((name) => `<button type="button" class="${cur === name ? "on" : ""}" data-act="set-comedor" data-id="${esc(name)}">${esc(name)}</button>`).join("")}
   </div>`;
 }
@@ -1420,6 +1534,7 @@ function ensureAlertHost() {
     host.dataset.bound = "1";
     host.addEventListener("click", onClick);
     host.addEventListener("input", onPickInput);
+    host.addEventListener("change", onPickInput);
     host.addEventListener("keydown", onPickKey);
   }
   return host;
@@ -1428,40 +1543,6 @@ function ensureAlertHost() {
 function openAlert(html) {
   ensureAlertHost().innerHTML = html;
   document.body.classList.add("modal-open");
-}
-
-function showSummaryModal() {
-  const mesa = getMesa();
-  const meal = currentLote();
-  const n = mesaMealCount(mesa);
-  const fundoOpts = fundos().map((name) => [name, name]);
-  const comedorOpts = comedores().map((name) => [name, name]);
-  openAlert(`<div class="modal-back" data-act="dismiss-alert">
-    <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
-      <div class="summary-top">
-        ${sectionHead("Solicitud de almuerzo", state.extraOn ? "Entra como extra (se olvidó o llegó tarde). Va a Comidas extras." : "Almuerzo normal. Confirme fundo y comedor antes de enviar.")}
-      </div>
-      <div class="summary-stat">
-        <b>${n}</b>
-        <span>${n} ${n === 1 ? "solicitud" : "solicitudes"} de ${mealWord(meal, n)}</span>
-      </div>
-      <p class="summary-auth"><span>Autoriza</span><strong>${esc(authLabel())}</strong></p>
-      <div class="summary-fields">
-        <div class="pick-field">
-          <p class="pick-label">Fundo</p>
-          ${pickSelect("sel-fundo", currentFundo(), fundoOpts)}
-        </div>
-        <div class="pick-field">
-          <p class="pick-label">Comedor</p>
-          ${pickSelect("sel-comedor", currentComedor(), comedorOpts)}
-        </div>
-      </div>
-      <div class="footer-actions">
-        <button class="btn ghost" data-act="dismiss-alert" type="button">Cerrar</button>
-        <button class="btn leaf" data-act="send-lista" type="button"${n ? "" : " disabled"}>${state.extraOn ? "Enviar extra" : "Enviar normal"}</button>
-      </div>
-    </div>
-  </div>`);
 }
 
 function pageSlice(list, page = state.mesaPage) {
@@ -1543,14 +1624,14 @@ function welcomeView() {
   render(`<section class="welcome">
     <div class="welcome-hero">
       <figure class="welcome-frame">
-        <img src="./assets/entrada.png" alt="" width="270" height="320" decoding="async" fetchpriority="high" />
+        <img src="./assets/CIMPROMIN_alta_calidad.png" alt="CIMPROMIN" width="280" height="280" decoding="async" fetchpriority="high" />
       </figure>
     </div>
     <div class="welcome-sheet">
-      <h1>Pide tu <span>comida</span></h1>
-      <p>Rica, rápida y lista para el turno.</p>
+      <h1>Tareo de <span>personal</span></h1>
+      <p>El jefe inicia sesión y registra a su equipo.</p>
       <div class="dots" aria-hidden="true"><i class="on"></i><i></i><i></i></div>
-      <button class="cta" data-act="enter" type="button">Empezar</button>
+      <button class="cta" data-act="enter" type="button">Iniciar sesión</button>
       ${installSlot()}
     </div>
   </section>`);
@@ -1558,13 +1639,13 @@ function welcomeView() {
 
 function lockView() {
   render(`<section class="lock">
-    <div class="welcome-hero">
-      <figure class="welcome-frame">
-        <img src="./assets/entrada.png" alt="" />
+    <div class="lock-card">
+      <figure class="lock-mark">
+        <img src="./assets/CIMPROMIN_alta_calidad.png" alt="CIMPROMIN" />
       </figure>
+      <h1>Ábrela en el celular</h1>
+      <p>El tareo se registra desde el teléfono del jefe de turno.</p>
     </div>
-    <h1>Ábrela en el celular</h1>
-    <p>Esta app es solo para el teléfono. En computadora no se usa.</p>
   </section>`);
 }
 
@@ -1574,7 +1655,7 @@ function qrIcon() {
 
 function camActions() {
   return `<div class="cam-actions">
-    <button class="btn cam" data-act="start-cam" type="button">${qrIcon()} Activar cámara QR</button>
+    <button class="btn cam" data-act="start-cam" type="button">${qrIcon()} Escanear QR</button>
     <button class="btn stop" data-act="stop-cam" type="button">Detener cámara</button>
   </div>`;
 }
@@ -1704,6 +1785,555 @@ function holdNameSpeech(worker) {
   speak(name, { onDone: release });
 }
 
+const MARCA_GAP_MS = 8000;
+const CONFIRMA_MS = 1600;
+
+const CLASE_MARCA = {
+  entrada: { label: "Entrada", habla: "Entrada", kind: "in", tipo: "entrada" },
+  almuerzo: { label: "Salida", habla: "Salida", kind: "break", tipo: "salida" },
+  retorno: { label: "Entrada", habla: "Entrada", kind: "back", tipo: "entrada" },
+  salida: { label: "Salida", habla: "Salida", kind: "out", tipo: "salida" },
+};
+
+function claseMarcacion(mark, index) {
+  if (mark?.clase && CLASE_MARCA[mark.clase]) return mark.clase;
+  if (mark?.tipo === "salida") return "salida";
+  return index > 0 ? "retorno" : "entrada";
+}
+
+function siguienteClase(previas, hora) {
+  const last = previas.at(-1);
+  if (!last) return "entrada";
+  const clase = claseMarcacion(last, previas.length - 1);
+  if (clase === "entrada") return "salida";
+  if (clase === "almuerzo") return "retorno";
+  if (clase === "retorno") return "salida";
+  return "entrada";
+}
+
+function marcasDe(dni, fecha = todayKey(TZ)) {
+  const key = normalizeDni(dni);
+  if (!key) return [];
+  return store.getJornada()
+    .filter((m) => normalizeDni(m.dni) === key && m.fecha === fecha)
+    .sort((a, b) => (a.at || 0) - (b.at || 0));
+}
+
+function marcaDemasiadoPronto(dni) {
+  const last = marcasDe(dni).at(-1);
+  return !!(last && Date.now() - last.at < MARCA_GAP_MS);
+}
+
+function semanaActual() {
+  const t = nowParts(TZ);
+  const [y, mo, d] = t.fecha.split("-").map(Number);
+  const date = new Date(Date.UTC(y, mo - 1, d));
+  const mondayOffset = (date.getUTCDay() + 6) % 7;
+  const start = new Date(date);
+  start.setUTCDate(date.getUTCDate() - mondayOffset);
+  const days = [];
+  for (let i = 0; i < 7; i += 1) {
+    const day = new Date(start);
+    day.setUTCDate(start.getUTCDate() + i);
+    days.push(day.toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+function aMinutos(raw) {
+  const m = String(raw || "").match(/(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+function jornadaDe(dni, fecha = todayKey(TZ)) {
+  const marks = marcasDe(dni, fecha);
+  const hoy = fecha === todayKey(TZ);
+  const ahora = aMinutos(nowParts(TZ).hora);
+  const eventos = marks.map((mark, i) => {
+    const next = marks[i + 1];
+    let label = "Entrada";
+    let kind = "in";
+    const clase = claseMarcacion(mark, i);
+    if (CLASE_MARCA[clase] && mark.clase) {
+      label = CLASE_MARCA[clase].label;
+      kind = CLASE_MARCA[clase].kind;
+    } else if (mark.tipo === "salida") {
+      const temporal = !!(next && next.tipo === "entrada");
+      label = "Salida";
+      kind = temporal ? "break" : "out";
+    } else if (i > 0) {
+      label = "Retorno";
+      kind = "back";
+    }
+    return { ...mark, label, kind };
+  });
+  let dentro = 0;
+  let fuera = 0;
+  for (let i = 0; i < marks.length; i += 1) {
+    const a = aMinutos(marks[i].hora);
+    const b = marks[i + 1] ? aMinutos(marks[i + 1].hora) : null;
+    if (a == null) continue;
+    if (marks[i].tipo === "entrada") {
+      const end = b != null ? b : (hoy && ahora != null ? ahora : null);
+      if (end != null && end >= a) dentro += end - a;
+    } else if (b != null && b >= a) {
+      fuera += b - a;
+    }
+  }
+  const first = marks[0];
+  const last = marks.at(-1);
+  let empresa = null;
+  if (first) {
+    const a = aMinutos(first.hora);
+    const b = last?.tipo === "salida"
+      ? aMinutos(last.hora)
+      : (hoy && ahora != null ? ahora : aMinutos(last?.hora));
+    if (a != null && b != null && b >= a) empresa = b - a;
+  }
+  const lastClase = last?.clase || (last?.tipo === "salida" ? "salida" : "");
+  const completo = lastClase === "salida";
+  return {
+    eventos,
+    dentro,
+    fuera,
+    empresa,
+    completo,
+    incompleto: marks.length > 0 && !completo,
+    dentroEstado: last?.tipo === "entrada",
+  };
+}
+
+function semanaDe(dni) {
+  let efectivas = 0;
+  let completos = 0;
+  let incompletas = 0;
+  for (const fecha of semanaActual()) {
+    const j = jornadaDe(dni, fecha);
+    if (!j.eventos.length) continue;
+    efectivas += j.dentro;
+    if (j.completo) completos += 1;
+    else incompletas += 1;
+  }
+  return { efectivas, completos, incompletas };
+}
+
+function fmtDur(mins) {
+  if (mins == null || mins < 0) return "—";
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${h}h ${String(m).padStart(2, "0")}m`;
+}
+
+function personaAlmuerzo(id) {
+  const mesa = getMesa().find((p) => normalizeDni(p.id) === id) || {};
+  const oficial = findWorkerByDni(id) || {};
+  const pick = (key) => mesa[key] || oficial[key] || "";
+  return {
+    dni: id,
+    id,
+    apellido: pick("apellido"),
+    nombre: pick("nombre"),
+    nombreCompleto: pick("nombreCompleto"),
+    cargo: pick("cargo") || pick("area"),
+    area: pick("area") || pick("cargo"),
+  };
+}
+
+function showLunchModal(dni, claseKeep) {
+  const id = normalizeDni(dni);
+  if (!id) return;
+  state.lunchDni = id;
+  const who = personaAlmuerzo(id);
+  const salio = marcaAlmuerzo(id, "almuerzo");
+  const entro = marcaAlmuerzo(id, "retorno");
+  if (claseKeep === "almuerzo" || claseKeep === "retorno") state.lunchClase = claseKeep;
+  else state.lunchClase = salio && !entro ? "retorno" : "almuerzo";
+  const elegida = state.lunchClase === "retorno" ? entro : salio;
+  const hora = elegida?.hora || (state.lunchClase === "retorno" ? "13:00" : "12:00");
+  const [hh, mm] = hora.split(":");
+  const nombre = displayName(who);
+  const on = (clase) => state.lunchClase === clase ? " lunch-on" : "";
+  const aviso = avisoGuardado();
+  openAlert(`<div class="modal-back" data-act="dismiss-alert">
+    <div class="modal summary-modal lunch-modal" role="dialog" aria-modal="true" data-act="stay">
+      <div class="lunch-mark">${forkIcon()}</div>
+      <h2>Almuerzo</h2>
+      <p class="lunch-name">${esc(nombre || id)}</p>
+      ${nombre ? `<p class="lunch-dni">DNI ${esc(id)}</p>` : ""}
+      <p class="clock-label">Hora real</p>
+      <div class="clock" id="lunch-hora">
+        <div class="clock-col" data-part="h">${relojCol("h", 23, hh)}</div>
+        <b class="clock-sep" aria-hidden="true">:</b>
+        <div class="clock-col" data-part="m">${relojCol("m", 59, mm)}</div>
+      </div>
+      <p class="lunch-hint${aviso ? " bad" : ""}" id="lunch-aviso">${aviso ? esc(aviso) : "Si hay cola, corrija la hora. Así nadie sale perjudicado."}</p>
+      <div class="lunch-actions">
+        <button class="btn ghost${on("almuerzo")}" data-act="lunch-pick" data-clase="almuerzo" data-id="${esc(id)}" type="button">Salió a almorzar<small>${esc(salio?.hora || "12:00")}</small></button>
+        <button class="btn ghost${on("retorno")}" data-act="lunch-pick" data-clase="retorno" data-id="${esc(id)}" type="button">Entró<small>${esc(entro?.hora || "13:00")}</small></button>
+      </div>
+      <button class="btn ghost lunch-close" data-act="dismiss-alert" type="button">Cerrar</button>
+    </div>
+  </div>`);
+  alinearReloj();
+}
+
+function relojCol(part, max, current) {
+  let html = `<span class="clock-pad"></span>`;
+  for (let i = 0; i <= max; i++) {
+    const v = String(i).padStart(2, "0");
+    html += `<button type="button" class="clock-n${v === current ? " on" : ""}" data-act="lunch-tick" data-part="${part}" data-v="${v}">${v}</button>`;
+  }
+  return html + `<span class="clock-pad"></span>`;
+}
+
+function alinearReloj() {
+  const root = document.getElementById("lunch-hora");
+  if (!root) return;
+  const place = () => {
+    state.lunchHold = true;
+    root.querySelectorAll(".clock-col").forEach((col) => {
+      if (!col.dataset.bound) {
+        col.dataset.bound = "1";
+        col.addEventListener("scroll", () => marcarReloj(col), { passive: true });
+      }
+      const on = col.querySelector(".clock-n.on");
+      if (on) col.scrollTop = on.offsetTop - (col.clientHeight - on.offsetHeight) / 2;
+    });
+    state.lunchReadyAt = Date.now() + 500;
+    state.lunchHold = false;
+  };
+  place();
+  window.requestAnimationFrame(place);
+}
+
+function ponerReloj(hora) {
+  const [hh, mm] = (horaMinutos(hora) || "00:00").split(":");
+  state.lunchHold = true;
+  document.querySelectorAll("#lunch-hora .clock-col").forEach((col) => {
+    const v = col.dataset.part === "h" ? hh : mm;
+    const el = col.querySelector(`[data-v="${v}"]`);
+    if (!el) return;
+    col.querySelectorAll(".clock-n.on").forEach((n) => n.classList.remove("on"));
+    el.classList.add("on");
+    col.scrollTop = el.offsetTop - (col.clientHeight - el.offsetHeight) / 2;
+  });
+  state.lunchReadyAt = Date.now() + 500;
+  state.lunchHold = false;
+}
+
+function pintarOpcion() {
+  document.querySelectorAll("[data-act='lunch-pick']").forEach((el) => {
+    el.classList.toggle("lunch-on", el.dataset.clase === state.lunchClase);
+  });
+}
+
+function limitesAlmuerzo(clase) {
+  const marks = marcasDe(state.lunchDni);
+  const entrada = marks.find((m) => m.clase === "entrada");
+  const salida = [...marks].reverse().find((m) => m.clase === "salida");
+  const salio = marcaAlmuerzo(state.lunchDni, "almuerzo");
+  const entro = marcaAlmuerzo(state.lunchDni, "retorno");
+  let min = null;
+  let minHora = "";
+  let minAviso = "";
+  let max = null;
+  let maxHora = "";
+  let maxAviso = "";
+  if (entrada && aMinutos(entrada.hora) != null) {
+    min = aMinutos(entrada.hora);
+    minHora = entrada.hora;
+    minAviso = "No puede ser antes de la entrada.";
+  }
+  if (clase === "retorno" && salio && aMinutos(salio.hora) != null && (min == null || aMinutos(salio.hora) > min)) {
+    min = aMinutos(salio.hora);
+    minHora = salio.hora;
+    minAviso = "El regreso no puede ser antes de la salida.";
+  }
+  if (clase === "almuerzo" && entro && aMinutos(entro.hora) != null) {
+    max = aMinutos(entro.hora);
+    maxHora = entro.hora;
+    maxAviso = "La salida no puede ser después del regreso.";
+  }
+  if (salida && aMinutos(salida.hora) != null && (max == null || aMinutos(salida.hora) < max)) {
+    max = aMinutos(salida.hora);
+    maxHora = salida.hora;
+    maxAviso = "No puede ser después de la salida.";
+  }
+  return { min, minHora, minAviso, max, maxHora, maxAviso };
+}
+
+function ordenAlmuerzo(clase, hora) {
+  const nueva = aMinutos(hora);
+  if (nueva == null) return { ok: false, hora: "", aviso: "" };
+  const lim = limitesAlmuerzo(clase);
+  if (lim.min != null && nueva < lim.min) return { ok: false, hora: lim.minHora, aviso: lim.minAviso };
+  if (lim.max != null && nueva > lim.max) return { ok: false, hora: lim.maxHora, aviso: lim.maxAviso };
+  return { ok: true, hora, aviso: "" };
+}
+
+function avisoGuardado() {
+  const salio = marcaAlmuerzo(state.lunchDni, "almuerzo");
+  const entro = marcaAlmuerzo(state.lunchDni, "retorno");
+  if (salio) {
+    const orden = ordenAlmuerzo("almuerzo", salio.hora);
+    if (!orden.ok) return orden.aviso;
+  }
+  if (entro) {
+    const orden = ordenAlmuerzo("retorno", entro.hora);
+    if (!orden.ok) return orden.aviso;
+  }
+  return "";
+}
+
+function hablarTareo(texto) {
+  const phrase = String(texto || "").replace(/almuerzo/ig, "").replace(/\s+/g, " ").trim();
+  if (!phrase || phrase === state.lunchHablado) return;
+  state.lunchHablado = phrase;
+  speak(phrase, { flush: true });
+}
+
+function fraseMarcacion(clase) {
+  const nombre = prepareSpeakName(personaAlmuerzo(state.lunchDni));
+  const habla = clase === "retorno" ? "Entrada" : "Salida";
+  return [habla, nombre].filter(Boolean).join(". ");
+}
+
+function avisoAlmuerzo(texto) {
+  const el = document.getElementById("lunch-aviso");
+  if (!el) return;
+  el.textContent = texto || "Si hay cola, corrija la hora. Así nadie sale perjudicado.";
+  el.classList.toggle("bad", !!texto);
+}
+
+function programarHora(force) {
+  if (!force && (state.lunchHold || Date.now() < (state.lunchReadyAt || 0))) return;
+  window.clearTimeout(state.lunchTimer);
+  state.lunchTimer = window.setTimeout(() => {
+    const hora = horaReloj();
+    const clase = state.lunchClase === "retorno" ? "retorno" : "almuerzo";
+    const orden = ordenAlmuerzo(clase, hora);
+    if (!orden.ok) {
+      avisoAlmuerzo(orden.aviso);
+      hablarTareo(orden.aviso);
+      const previa = marcaAlmuerzo(state.lunchDni, clase)?.hora || "";
+      const previaMala = !!previa && !ordenAlmuerzo(clase, previa).ok;
+      const volver = previaMala ? orden.hora : (previa || orden.hora);
+      if (volver) ponerReloj(volver);
+      if (previaMala && guardarAlmuerzo(state.lunchDni, clase, volver)) {
+        const small = document.querySelector(`[data-act="lunch-pick"][data-clase="${clase}"] small`);
+        if (small) small.textContent = volver;
+        if (state.view === "home") refreshMesaUi();
+      }
+      return;
+    }
+    avisoAlmuerzo("");
+    const previa = marcaAlmuerzo(state.lunchDni, clase)?.hora || "";
+    if (!hora || hora === previa) return;
+    if (!guardarAlmuerzo(state.lunchDni, clase, hora)) return;
+    const small = document.querySelector(`[data-act="lunch-pick"][data-clase="${clase}"] small`);
+    if (small) small.textContent = hora;
+    hablarTareo(fraseMarcacion(clase));
+    if (state.view === "home") refreshMesaUi();
+  }, 160);
+}
+
+function marcarReloj(col) {
+  const mid = col.scrollTop + col.clientHeight / 2;
+  let best = null;
+  let bestD = Infinity;
+  col.querySelectorAll(".clock-n").forEach((el) => {
+    const d = Math.abs(el.offsetTop + el.offsetHeight / 2 - mid);
+    if (d < bestD) {
+      bestD = d;
+      best = el;
+    }
+  });
+  col.querySelectorAll(".clock-n.on").forEach((el) => el.classList.remove("on"));
+  best?.classList.add("on");
+  programarHora();
+}
+
+function horaReloj() {
+  const root = document.getElementById("lunch-hora");
+  if (!root) return "";
+  const h = root.querySelector('.clock-col[data-part="h"] .clock-n.on')?.dataset.v;
+  const m = root.querySelector('.clock-col[data-part="m"] .clock-n.on')?.dataset.v;
+  return h && m ? `${h}:${m}` : "";
+}
+
+function marcaAlmuerzo(dni, clase) {
+  return marcasDe(dni).find((m) => m.clase === clase) || null;
+}
+
+function msLima(fecha, hora) {
+  const [y, mo, d] = String(fecha || "").split("-").map(Number);
+  const [hh, mm] = String(hora || "").split(":").map(Number);
+  if (!y || Number.isNaN(hh)) return Date.now();
+  return Date.UTC(y, (mo || 1) - 1, d || 1, hh + 5, mm || 0, 0);
+}
+
+function guardarAlmuerzo(dni, clase, horaRaw) {
+  const id = normalizeDni(dni);
+  const hora = horaMinutos(horaRaw);
+  if (!id || !hora || (clase !== "almuerzo" && clase !== "retorno")) return false;
+  const t = nowParts(TZ);
+  const who = personaAlmuerzo(id);
+  const parts = nameParts(who);
+  const list = store.getJornada().filter((m) => !(normalizeDni(m.dni) === id && m.fecha === t.fecha && m.clase === clase));
+  list.push({
+    dni: id,
+    fecha: t.fecha,
+    hora,
+    at: msLima(t.fecha, hora),
+    tipo: clase === "almuerzo" ? "salida" : "entrada",
+    clase,
+    apellido: twoApellidos(who),
+    nombre: parts.nombre || who.nombre || "",
+    cargo: who.cargo || who.area || "",
+  });
+  store.setJornada(list);
+  return true;
+}
+
+function tieneAlmuerzo(dni) {
+  return marcasDe(dni).some((m) => m.clase === "almuerzo" || m.clase === "retorno");
+}
+
+function jornadaHtml(dni) {
+  const j = jornadaDe(dni);
+  if (!j.eventos.length) return "";
+  const id = normalizeDni(dni);
+  const who = getMesa().find((p) => normalizeDni(p.id) === id);
+  const visibles = j.eventos.filter((ev) => ev.clase !== "almuerzo" && ev.clase !== "retorno");
+  const lado = (salida) => visibles.filter((ev) => (ev.tipo === "salida") === salida).map((ev) => {
+    const label = salida ? "Salida" : "Entrada";
+    return `<span class="jornada-line ${salida ? "out" : "in"}"><i>${label}</i><b>${horaMinutos(ev.hora)}</b></span>`;
+  }).join("");
+  const on = tieneAlmuerzo(id) ? " on" : "";
+  const btn = `<button class="lunch-btn${on}" data-act="lunch-open" data-id="${esc(id)}" type="button" aria-label="Salida y entrada de ${esc(nombreFila(who) || id)}">${forkIcon()}</button>`;
+  return `<div class="jornada"><span class="jornada-side">${lado(false)}</span>${btn}<span class="jornada-side right">${lado(true)}</span></div>`;
+}
+
+function asegurarEntradaPrevia(worker) {
+  const dni = normalizeDni(worker?.dni || worker?.id);
+  if (!dni || marcasDe(dni).length) return;
+  const row = getMesa().find((p) => normalizeDni(p.id) === dni);
+  if (!row) return;
+  const t = nowParts(TZ);
+  store.addMarcacion({
+    dni,
+    fecha: row.fecha || t.fecha,
+    hora: horaMinutos(row.hora) || t.hora,
+    at: row.escaneadoAt || t.ms,
+    tipo: "entrada",
+    clase: "entrada",
+    apellido: row.apellido || "",
+    nombre: row.nombre || "",
+    cargo: row.cargo || "",
+  });
+}
+
+function showRetiroModal(worker) {
+  const id = normalizeDni(worker?.dni || worker?.id);
+  if (!id) return;
+  state.retiroDni = id;
+  state.retiroStamp = nowParts(TZ);
+  const who = personaAlmuerzo(id);
+  const nombre = displayName(who) || id;
+  const dicho = prepareSpeakName(who) || nombre;
+  openAlert(`<div class="modal-back" data-act="stay">
+    <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
+      <h2>¿Se retira?</h2>
+      <p class="lunch-name">${esc(nombre)}</p>
+      <p class="lunch-dni">DNI ${esc(id)}</p>
+      <p class="lunch-hint">Puede ser a cualquier hora, por permiso o porque se siente mal.</p>
+      <div class="retiro-actions">
+        <button class="btn" data-act="retiro-si" data-id="${esc(id)}" type="button">Sí, se retira</button>
+        <button class="btn ghost" data-act="retiro-no" type="button">No, solo aviso</button>
+      </div>
+    </div>
+  </div>`);
+  speak(`Se retira? ${dicho}`, { flush: true });
+}
+
+function cerrarAvisoRetiro() {
+  state.retiroDni = "";
+  state.retiroStamp = null;
+  dismissAlert();
+  showScanToast("Solo un aviso. Sigue dentro.", 1800);
+  speak("Solo un aviso. Sigue dentro.", { flush: true });
+  if (state.view === "supervisor" || state.view === "home") resumeCam();
+}
+
+function registrarMarcacion(worker, stamp) {
+  const dni = normalizeDni(worker?.dni || worker?.id);
+  if (!dni) return { ok: false };
+  asegurarEntradaPrevia(worker);
+  if (marcaDemasiadoPronto(dni)) return { ok: false, tooSoon: true };
+  const previas = marcasDe(dni);
+  const t = stamp || nowParts(TZ);
+  const clase = siguienteClase(previas, t.hora);
+  const info = CLASE_MARCA[clase];
+  const parts = nameParts(worker);
+  store.addMarcacion({
+    dni,
+    fecha: t.fecha,
+    hora: horaMinutos(t.hora),
+    at: t.ms,
+    tipo: info.tipo,
+    clase,
+    apellido: twoApellidos(worker),
+    nombre: parts.nombre || "",
+    cargo: worker.cargo || "",
+  });
+  if (!personOnMesa(dni)) registerPerson(worker, { silent: true });
+  const dentro = info.tipo === "entrada";
+  return {
+    ok: true,
+    clase,
+    kind: info.kind,
+    label: info.label,
+    habla: info.habla,
+    note: dentro ? "Está dentro. Siguiente." : "Está fuera. Siguiente.",
+    primera: previas.length === 0,
+  };
+}
+
+function confirmarMarcacion(worker, mark) {
+  const nombre = prepareSpeakName(worker) || twoApellidos(worker) || "";
+  showScanHit({
+    dni: worker.dni,
+    sexo: personSexo(worker),
+    nombre,
+    cargo: [nameParts(worker).nombre, worker.cargo].filter(Boolean).join(" · "),
+    ok: true,
+    kind: mark.kind,
+    stateLabel: mark.label,
+    note: mark.note,
+  });
+  showScanToast(`${mark.label}. ${nombre}`.trim(), CONFIRMA_MS);
+  state.confirmUntil = Date.now() + CONFIRMA_MS;
+  try { navigator.vibrate?.(mark.clase === "salida" || mark.clase === "almuerzo" ? [40, 30, 40] : 50); } catch { /* sin vibración */ }
+  const frase = [mark.habla, nombre].filter(Boolean).join(". ");
+  const dni = normalizeDni(worker.dni || worker.id);
+  state.speechLockDni = dni;
+  state.speechLockUntil = Date.now() + 8000;
+  speak(frase, {
+    onDone: () => {
+      if (state.speechLockDni === dni) state.speechLockUntil = Date.now() + 700;
+    },
+  });
+  const token = (state.hitToken || 0) + 1;
+  state.hitToken = token;
+  window.setTimeout(() => {
+    if (state.hitToken !== token) return;
+    const host = document.getElementById("scan-hit");
+    if (host) host.hidden = true;
+    if (state.view === "home") setScanLive("Siguiente.");
+  }, CONFIRMA_MS);
+}
+
 function warnRepeatedPerson(dni, worker = null) {
   const key = normalizeDni(dni) || String(dni || "");
   const now = Date.now();
@@ -1724,11 +2354,11 @@ function warnRepeatedPerson(dni, worker = null) {
       nombre,
       cargo: who ? [nameParts(who).nombre, who.cargo].filter(Boolean).join(" · ") : "Ya está en la lista",
       ok: false,
-      stateLabel: "Repetida",
-      note: "Persona repetida.",
+      stateLabel: "Ya registrado",
+      note: "Ya registrado. Siguiente.",
     });
-    showScanToast("Persona repetida.");
-    speak("Persona repetida.", { flush: true });
+    showScanToast("Ya registrado.", 1200);
+    speak("Ya registrado.");
   } catch { /* voz/UI no bloquean el siguiente QR */ }
 }
 
@@ -1744,8 +2374,8 @@ function notifyScanWait() {
 
 function onScanBusy(_raw, key) {
   const dni = normalizeDni(key);
-  if (state.scanMode === "wrk" && dni && personOnMesa(dni)) {
-    warnRepeatedPerson(dni);
+  if (state.scanMode === "wrk" && dni && marcaDemasiadoPronto(dni)) {
+    if (Date.now() > (state.confirmUntil || 0)) warnRepeatedPerson(dni);
     return;
   }
   if (!state.isProcessing && !state.handlingScan) return;
@@ -1764,12 +2394,9 @@ function forkIcon() {
   return `<span class="fork" aria-hidden="true"><svg viewBox="0 0 32 32" width="20" height="20"><path fill="currentColor" d="M8 3h2.1v8.4c0 .6.5 1.1 1.1 1.1s1.1-.5 1.1-1.1V3H14.4v8.4c0 .6.5 1.1 1.1 1.1s1.1-.5 1.1-1.1V3H18.8v8.6a4.7 4.7 0 0 1-3.7 4.6V29h-2.3V16.2A4.7 4.7 0 0 1 8 11.6V3z"/></svg></span>`;
 }
 
-function avatarHtml(person, size = "") {
-  const sex = personSexo(person);
+function avatarHtml(_person, size = "") {
   const cls = `avatar${size ? ` ${size}` : ""}`;
-  if (sex !== "M" && sex !== "F") return `<span class="${cls} ph" aria-hidden="true"></span>`;
-  const src = sex === "F" ? "./assets/mujer.png" : "./assets/hombre.png";
-  return `<img class="${cls}" src="${src}" alt="" decoding="async" draggable="false">`;
+  return `<span class="${cls}" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 19.2a6.5 6.5 0 0 1 13 0"/></svg></span>`;
 }
 
 function getMesa() {
@@ -1784,7 +2411,16 @@ function upsertMesa(person) {
   const id = normalizeDni(person.id || person.dni);
   if (!id) return;
   const prev = getMesa().find((p) => normalizeDni(p.id) === id);
-  const row = { ...person, id, dni: person.dni || id, menus: menuQty(prev) };
+  const t = nowParts(TZ);
+  const row = {
+    ...person,
+    id,
+    dni: person.dni || id,
+    menus: menuQty(prev),
+    fecha: prev?.fecha || person.fecha || t.fecha,
+    hora: prev?.hora || person.hora || t.hora,
+    escaneadoAt: prev?.escaneadoAt || person.escaneadoAt || t.ms,
+  };
   setMesa([row, ...getMesa().filter((p) => normalizeDni(p.id) !== id)]);
 }
 
@@ -1880,7 +2516,7 @@ function showSupervisorLunchModal(worker) {
   scanner.pause();
   openAlert(`<div class="modal-back" data-act="stay">
     <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
-      ${sectionHead("Almuerzo del supervisor", "Ya tenemos un almuerzo cargado por el supervisor. Así no escanea dos veces. Si desea, puede eliminarlo.")}
+      ${sectionHead("Jefe en la lista", "Ya quedó cargado para no escanearlo dos veces. Si desea, puede quitarlo.")}
       <p class="extra-note">DNI ${esc(worker.dni)} · ${esc(label)}</p>
       <div class="footer-actions" style="margin-top:8px">
         <button class="btn ghost" data-act="drop-sup-lunch" data-id="${esc(worker.dni)}" type="button">Eliminar</button>
@@ -1888,16 +2524,16 @@ function showSupervisorLunchModal(worker) {
       </div>
     </div>
   </div>`);
-  speak("Almuerzo del supervisor cargado. Puede dejarlo o eliminarlo.", { flush: true });
+  speak("El jefe quedó en la lista. Puede dejarlo o quitarlo.", { flush: true });
 }
 
 function scanHelp() {
   return `<aside class="scan-help">
-    <p class="scan-help-title">Qué hacer</p>
+    <p class="scan-help-title">Cómo entrar</p>
     <ol>
-      <li>Verde: solo supervisores. Escanee su QR o escriba el DNI.</li>
+      <li>Verde: solo jefes autorizados. Escanee su QR o escriba el DNI.</li>
       <li>Rojo: cualquier persona, por emergencia. También puede escribir el DNI.</li>
-      <li>Si entra en rojo, usted pide la comida. Tenga cuidado.</li>
+      <li>Si entra en rojo, usted registra el tareo. Tenga cuidado.</li>
     </ol>
   </aside>`;
 }
@@ -1905,7 +2541,7 @@ function scanHelp() {
 function showEmergencyWarn() {
   openAlert(`<div class="modal-back" data-act="dismiss-alert">
     <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
-      ${sectionHead("Cualquier persona", "El botón rojo deja entrar a cualquiera. Serás responsable de solicitar la comida. Escanea tu QR o escribe el DNI. Después podrás elegir fundo y comedor.")}
+      ${sectionHead("Cualquier persona", "El botón rojo deja entrar a cualquiera. Usted será responsable del tareo. Escanea tu QR o escribe el DNI. Después podrá elegir fundo y lugar.")}
       <p class="extra-note">Ten cuidado, por favor. Esto es solo por emergencia.</p>
       <div class="footer-actions solo" style="margin-top:8px">
         <button class="btn leaf" data-act="confirm-emergency" type="button">Entendido</button>
@@ -1980,7 +2616,7 @@ function showEmergencyNameModal(dni, prefill = "") {
   scanner.pause();
   openAlert(`<div class="modal-back" data-act="dismiss-alert">
     <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
-      ${sectionHead("Cualquiera", "No está en supervisores. Escriba su nombre completo. Este pedido sale como almuerzo normal.")}
+      ${sectionHead("Cualquiera", "No está en la lista de jefes. Escriba su nombre completo. Este tareo sale como jornada normal.")}
       <p class="extra-note">DNI ${esc(dni)}</p>
       <div class="field" id="fEmergNom">
         <label>Apellidos y nombres</label>
@@ -2005,12 +2641,12 @@ function showDniLoginModal(cualquiera) {
   scanner.pause();
   const title = cualquiera ? "DNI de cualquiera" : "DNI de supervisor";
   const sub = cualquiera
-    ? "Escriba los 8 dígitos. Si no está en supervisores, pediremos el nombre. Este pedido sale como almuerzo normal."
+    ? "Escriba los 8 dígitos. Si no está en la lista de jefes, pediremos el nombre. Este tareo sale como jornada normal."
     : "Escriba los 8 dígitos. Solo entra quien está en la lista de supervisores.";
   openAlert(`<div class="modal-back" data-act="dismiss-alert">
     <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
       ${sectionHead(title, sub)}
-      ${cualquiera ? `<p class="extra-note">Cualquier persona. Tenga cuidado: usted pide la comida.</p>` : ""}
+      ${cualquiera ? `<p class="extra-note">Cualquier persona. Tenga cuidado: usted registra el tareo.</p>` : ""}
       <div class="field" id="fDniLogin">
         <label>DNI</label>
         <input id="dni-login" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="8 dígitos" enterkeyhint="go">
@@ -2102,11 +2738,11 @@ function supervisorView() {
   state.scanMode = "sup";
   const emerg = !!state.emergencyPending;
   render(`<div class="shell">
-    ${appBar({ title: "Pedir almuerzo", sub: emerg ? "Rojo · cualquier persona" : "Verde · solo supervisores", back: "back-welcome" })}
+    ${appBar({ title: "Iniciar sesión", sub: emerg ? "Rojo · cualquier persona" : "Verde · solo jefes", back: "back-welcome" })}
     <div class="scan-fit">
       <section class="section-card scan-panel${emerg ? " is-emerg" : ""}">
         <div class="scan-head">
-          ${sectionHead("Permiso", "Escanea tu QR o escribe el DNI.")}
+          ${sectionHead("Acceso del jefe", "Escanea tu QR o escribe el DNI.")}
           ${dniHeadBtn()}
         </div>
         ${!navigator.onLine ? `<p class="extra-note">Sin señal. Puede escanear y enviar.</p>` : ""}
@@ -2149,68 +2785,122 @@ function mesaMealCount(mesa) {
   return mesa.reduce((sum, person) => sum + menuQty(person), 0);
 }
 
-function personLines(person) {
+function nombreFila(person) {
   const ape = String(person?.apellido || "").trim();
   const nom = String(person?.nombre || "").trim();
-  if (ape && nom) return { top: ape, bot: nom };
-  return { top: displayName(person) || person?.id || "", bot: "" };
+  return [ape, nom].filter(Boolean).join(" ") || person?.dni || person?.id || "";
 }
 
-function menuStepper(person) {
-  const qty = menuQty(person);
-  return `<div class="menu-box">
-    <div class="menu-line">
-      <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 10.5V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8.5M3 11h18M8 11V7.5A2.5 2.5 0 0 1 10.5 5h3A2.5 2.5 0 0 1 16 7.5V11"/></svg></span>
-      <span>Menús</span>
-      <div class="menu-step">
-        <button type="button" data-act="menu-minus" data-id="${esc(person.id)}" aria-label="Un menú" ${qty <= 1 ? "disabled" : ""}>−</button>
-        <b>${qty}</b>
-        <button type="button" class="plus" data-act="menu-plus" data-id="${esc(person.id)}" aria-label="Dos menús" ${qty >= 2 ? "disabled" : ""}>+</button>
-      </div>
-    </div>
-  </div>`;
+function genteHoy() {
+  const map = new Map();
+  const day = todayKey(TZ);
+  const sid = normalizeDni(supervisor()?.dni || supervisor()?.id || "");
+  for (const row of store.getCola().concat(store.getHistorial())) {
+    if (!row || (row.type !== "lista" && row.type !== "extra")) continue;
+    if (row.confirmed === false) continue;
+    const payload = row.payload || {};
+    if (payload.fecha_local !== day) continue;
+    const rowSid = normalizeDni(payload.supervisor_id || "");
+    if (sid && rowSid && rowSid !== sid) continue;
+    const at = row.savedAt || row.createdAt || 0;
+    for (const person of payload.personas || []) {
+      const id = normalizeDni(person?.dni || person?.id);
+      if (!id) continue;
+      const prev = map.get(id);
+      if (prev && (prev.escaneadoAt || 0) >= at) continue;
+      map.set(id, {
+        id,
+        dni: id,
+        apellido: person.apellido || "",
+        nombre: person.nombre || "",
+        cargo: person.area || person.cargo || "",
+        fecha: payload.fecha_local || day,
+        hora: horaMinutos(payload.hora_local),
+        status: "enviado",
+        enMesa: false,
+        escaneadoAt: at,
+        menus: menuQty(person),
+      });
+    }
+  }
+  for (const person of getMesa()) {
+    const id = normalizeDni(person.id || person.dni);
+    if (!id) continue;
+    const prev = map.get(id);
+    map.set(id, {
+      ...prev,
+      ...person,
+      id,
+      dni: id,
+      fecha: person.fecha || prev?.fecha || day,
+      hora: horaMinutos(person.hora) || prev?.hora || "",
+      escaneadoAt: person.escaneadoAt || prev?.escaneadoAt || 0,
+      enMesa: true,
+    });
+  }
+  for (const mark of store.getJornada()) {
+    if (mark.fecha !== day) continue;
+    const id = normalizeDni(mark.dni);
+    if (!id || map.has(id)) continue;
+    map.set(id, {
+      id,
+      dni: id,
+      apellido: mark.apellido || "",
+      nombre: mark.nombre || "",
+      cargo: mark.cargo || "",
+      fecha: mark.fecha,
+      hora: horaMinutos(mark.hora),
+      status: "lista",
+      enMesa: false,
+      escaneadoAt: mark.at || 0,
+    });
+  }
+  return [...map.values()].sort((a, b) => (b.escaneadoAt || 0) - (a.escaneadoAt || 0));
 }
 
 function mesaRows(mesa) {
-  const q = mesaFindDigits();
-  const shown = mesaForList(mesa);
-  if (!mesa.length) {
-    return `<div class="empty-mesa">${forkIcon()}<p>Aún nadie. Escanea al primero.</p></div>`;
+  const shown = mesaForList(genteHoy());
+  if (!genteHoy().length) {
+    return `<div class="empty-mesa"><p>Aún nadie ha venido hoy.</p></div>`;
   }
   if (!shown.length) {
     return `<div class="empty-mesa"><p>Ningún DNI coincide.</p></div>`;
   }
   const { rows } = pageSlice(shown);
   return rows.map((p) => {
-    const st = p.status === "enviado" ? "Listo" : p.status === "pendiente" ? "Guardado" : "En lista";
-    const kind = p.status === "enviado" ? "ok" : p.status === "pendiente" ? "wait" : "now";
-    const lines = personLines(p);
+    const cargo = String(p.cargo || p.area || "").trim();
+    const j = jornadaDe(p.dni || p.id);
+    let st = !p.enMesa || p.status === "enviado" ? "Enviado" : p.status === "pendiente" ? "Guardado" : "En lista";
+    let kind = st === "Enviado" ? "ok" : p.status === "pendiente" ? "wait" : "now";
+    if (j.eventos.length) {
+      st = j.dentroEstado ? "Dentro" : "Fuera";
+      kind = j.dentroEstado ? "now" : "ok";
+    }
     return `<div class="person-row">
       <div class="person-top">
         ${avatarHtml(p)}
         <div>
-          <b>${esc(lines.top)}</b>
-          ${lines.bot ? `<b class="person-name">${esc(lines.bot)}</b>` : ""}
-          <div class="meta">DNI ${esc(p.id)}${p.temporal ? " · Temporal" : ""}</div>
+          <b class="person-full">${esc(nombreFila(p))}</b>
+          <div class="meta">DNI ${esc(p.id)}${cargo ? ` · ${esc(cargo)}` : ""}${p.temporal ? " · Temporal" : ""}</div>
+          <div class="meta">Fecha ${esc(histFecha(p.fecha))}</div>
         </div>
         <span class="st ${kind}">${st}</span>
-        <button class="row-del" data-act="ask-drop-mesa" data-id="${esc(p.id)}" data-name="${esc(displayName(p))}" type="button" aria-label="Quitar ${esc(displayName(p) || p.id)}"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.2 5.1 5.1 6.2 10.9 12l-5.8 5.8 1.1 1.1L12 13.1l5.8 5.8 1.1-1.1L13.1 12l5.8-5.8-1.1-1.1L12 10.9 6.2 5.1z"/></svg></button>
+        ${p.enMesa ? `<button class="row-del" data-act="ask-drop-mesa" data-id="${esc(p.id)}" data-name="${esc(displayName(p))}" type="button" aria-label="Quitar ${esc(displayName(p) || p.id)}"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.2 5.1 5.1 6.2 10.9 12l-5.8 5.8 1.1 1.1L12 13.1l5.8 5.8 1.1-1.1L13.1 12l5.8-5.8-1.1-1.1L12 10.9 6.2 5.1z"/></svg></button>` : ""}
       </div>
-      ${menuStepper(p)}
+      ${jornadaHtml(p.dni || p.id)}
     </div>`;
   }).join("");
 }
 
 function mesaCountCopy(n) {
-  const meal = currentLote().toLowerCase();
-  if (!n) return { note: `Aún nadie para ${meal}`, unit: "personas" };
-  return { note: `Van a ${meal}`, unit: n === 1 ? "persona" : "personas" };
+  if (!n) return { note: "Aún nadie ha venido hoy", unit: "personas" };
+  return { note: "Vinieron hoy", unit: n === 1 ? "persona" : "personas" };
 }
 
 function mesaCountCard(n) {
   const copy = mesaCountCopy(n);
   return `<section class="section-card count-card">
-    ${sectionHead("Personas", copy.note, "mesa-note")}
+    ${sectionHead("Personal", copy.note, "mesa-note")}
     <div class="count-live" aria-live="polite">
       <b id="mesa-num">${n}</b>
       <span id="mesa-unit">${esc(copy.unit)}</span>
@@ -2220,18 +2910,20 @@ function mesaCountCard(n) {
 
 function refreshMesaUi() {
   const mesa = getMesa();
-  const slice = pageSlice(mesaForList(mesa));
+  const gente = genteHoy();
+  const slice = pageSlice(mesaForList(gente));
   const list = document.getElementById("mesa-list");
   const count = document.getElementById("mesa-note");
   const num = document.getElementById("mesa-num");
   const unit = document.getElementById("mesa-unit");
   const pager = document.getElementById("mesa-pager");
-  const copy = mesaCountCopy(mesa.length);
+  const copy = mesaCountCopy(gente.length);
   if (list) list.innerHTML = mesaRows(mesa);
   if (count) count.textContent = copy.note;
-  if (num) num.textContent = String(mesa.length);
+  if (num) num.textContent = String(gente.length);
   if (unit) unit.textContent = copy.unit;
   if (pager) pager.innerHTML = pagerHtml(slice.page, slice.pages);
+  paintTareoHoy();
   const send = document.querySelector('.form-actions [data-act="go-summary"], .footer-actions [data-act="go-summary"], .form-actions [data-act="send-lista"], .footer-actions [data-act="send-lista"]');
   if (send) send.disabled = !mesa.length;
   refreshPendPill();
@@ -2306,17 +2998,9 @@ function enterSession(person, { enviado = false, fecha, comida } = {}) {
   dismissAlert();
   store.clearMesa();
   show("home");
-  if (enviado && !person.emergencia) {
-    state.extraOn = false;
-    state.extraHold = false;
-    store.clearMesa();
-    speak("Hoy ya envió. Solo extra. La lista empieza vacía.", { flush: true });
-    setScanLive("Ya envió. Pulse Extra. La lista inicia vacía.", false);
-    return;
-  }
   if (person.emergencia) {
-    speak("Almuerzo normal. Escanee a cada persona.", { flush: true });
-    setScanLive("Almuerzo normal. Acerca el QR.", true);
+    speak("Jornada normal. Escanee a cada persona.", { flush: true });
+    setScanLive("Jornada normal. Acerca el QR.", true);
     return;
   }
   offerSupervisorOwnLunch(person);
@@ -2370,7 +3054,7 @@ function showLoginGate(person) {
   }, voiceCap);
   openAlert(`<div class="modal-back login-gate" data-act="stay">
     <div class="modal login-load" role="dialog" aria-modal="true" data-act="stay">
-      <p class="login-kicker">Q BERRIES</p>
+      <p class="login-kicker">CIMPROMIN</p>
       <h3>Iniciando sesión</h3>
       <p>Bienvenido${speakName ? `, ${esc(speakName)}` : ""}</p>
       <div class="login-bar" aria-hidden="true"><i id="login-bar"></i></div>
@@ -2457,16 +3141,16 @@ function releaseMesaAfterSend(records) {
   if (state.view === "home") refreshMesaUi();
 }
 
-function showScanHit({ dni = "—", nombre = "—", cargo = "—", ok = true, note = "", stateLabel = "", sexo = "" }) {
+function showScanHit({ dni = "—", nombre = "—", cargo = "—", ok = true, note = "", stateLabel = "", sexo = "", kind = "" }) {
   const host = document.getElementById("scan-hit");
   if (host) {
     host.hidden = false;
-    host.className = `hit-card ${ok ? "ok" : "bad"}`;
+    host.className = `hit-card ${ok ? "ok" : "bad"}${kind ? ` ${kind}` : ""}`;
     const face = avatarHtml({ dni, sexo }, "lg");
     host.innerHTML = `
       <div class="hit-top">
         <span class="hit-label">Identificación</span>
-        <span class="hit-state">${esc(stateLabel || (ok ? "Confirmado" : "No autorizado"))}</span>
+        <span class="hit-state">${esc(stateLabel || (ok ? "Identificado" : "No encontrado"))}</span>
       </div>
       <div class="hit-person">
         ${face}
@@ -2481,6 +3165,23 @@ function showScanHit({ dni = "—", nombre = "—", cargo = "—", ok = true, no
   setScanLive(note || `DNI ${dni}`, ok);
 }
 
+function tareoFecha() {
+  const iso = todayKey(TZ);
+  const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
+}
+
+function dashBoard() {
+  const n = getMesa().length;
+  return `<section class="dash-grid" aria-label="Tareo de hoy">
+    <article class="dash-card wide">
+      <span>Tareo de hoy</span>
+      <b>${n}</b>
+      <em>${n === 1 ? "trabajador en lista" : "trabajadores en lista"}</em>
+    </article>
+  </section>`;
+}
+
 function homeView() {
   if (!supervisor()) {
     show("supervisor");
@@ -2490,26 +3191,28 @@ function homeView() {
   state.formType = "pedido";
   const s = supervisor();
   const mesa = getMesa();
-  const slice = pageSlice(mesaForList(mesa));
+  const gente = genteHoy();
+  const slice = pageSlice(mesaForList(gente));
   render(`<div class="shell${isSendLocked() ? " is-locked" : ""}">
-    ${appBar({ title: "Solicitud de almuerzo", sub: `Turno · ${twoApellidos(s) || "supervisor"}${s?.emergencia ? " · Emergencia" : ""}` })}
+    ${appBar({ title: "Tareo", sub: `${tareoFecha()} · ${twoApellidos(s) || "jefe"}${s?.emergencia ? " · Emergencia" : ""}` })}
     <div class="scroll">
-      ${loteCard()}
+      <p class="tareo-lead">Registra la jornada de tu personal</p>
+      ${dashBoard()}
       <section class="section-card">
         <div class="scan-head">
-          ${sectionHead("Escaneo", isSendLocked() ? "Bloqueado. Pulse Extra para olvidados o tardanzas." : (state.extraOn ? "Solo quien falta. Entra como extra." : "Presente el QR de cada persona."))}
-          <button class="user-add" data-act="add-temp-person" type="button" aria-label="Agregar persona que no está en la base">${userIcon()}</button>
+          ${sectionHead("Identificar", isSendLocked() ? "Bloqueado. Pulse Extra si alguien se olvidó o llegó tarde." : "Escanea el código del trabajador o ingresa el DNI.")}
+          <button class="user-add" data-act="add-temp-person" type="button" aria-label="Ingresar DNI">${userIcon()}</button>
         </div>
         ${scanBox()}
-        <p class="scan-live" id="scan-live">${isSendLocked() ? "Ya envió. Pulse Extra si alguien se olvidó o llegó tarde." : "Listo para el siguiente QR."}</p>
+        <p class="scan-live" id="scan-live">${isSendLocked() ? "Ya envió. Pulse Extra si alguien se olvidó o llegó tarde." : "Coloca el código dentro del marco."}</p>
         ${scanHitBox()}
       </section>
-      ${mesaCountCard(mesa.length)}
+      ${mesaCountCard(gente.length)}
       ${mesaFindBox()}
       <div class="mesa" id="mesa-list">${mesaRows(mesa)}</div>
       <div id="mesa-pager">${pagerHtml(slice.page, slice.pages)}</div>
     </div>
-    ${soloFooter("go-summary", "Ver resumen", !mesa.length || isSendLocked())}
+    ${soloFooter("go-summary", "Enviar tareo", !mesa.length || isSendLocked())}
     ${fabBlock()}
   </div>`);
   startCamHere();
@@ -2545,12 +3248,10 @@ function orderView() {
 
 function summaryView() {
   show("home");
-  showSummaryModal();
 }
 
 function dayView() {
   show("home");
-  showSummaryModal();
 }
 
 function listaView() {
@@ -2585,7 +3286,7 @@ function listaView() {
 function cierreView() {
   const calc = computeHeadcount(recordsOfToday(TZ));
   render(`<div class="shell">
-    ${appBar({ title: "Cierre de cocina", sub: "Resumen del turno", back: "home", progress: 90 })}
+    ${appBar({ title: "Cierre del turno", sub: "Resumen del turno", back: "home", progress: 90 })}
     <div class="scroll">
       ${blockCard("Cierre", "Total de supervisores escaneados hoy.", `<div class="count-hero">
           <b>${calc.trabajadores_unicos}</b>
@@ -2614,7 +3315,7 @@ function syncView() {
       <p class="hello">${n ? "Por enviar" : "Todo enviado"}</p>
       <p class="sub">${state.online
         ? (n ? "Hay señal. Toca enviar." : "Todo enviado.")
-        : "Sin señal. Los pedidos están guardados en este celular."}</p>
+        : "Sin señal. Los registros están guardados en este celular."}</p>
       ${speakBar()}
       <div class="stat"><em>Pendientes</em><b>${n}</b></div>
     </div>
@@ -2638,7 +3339,7 @@ function moreView() {
       <div class="grid-actions">
         <button class="card" data-act="save-settings" type="button"><h3>Guardar conexión</h3><p>Solo para quien arma la app.</p></button>
         <a class="card" href="./setup.html"><h3>Imprimir códigos</h3><p>Credenciales.</p></a>
-        <button class="card" data-act="clear-cache" type="button"><h3>Limpiar app</h3><p>No borra pedidos guardados.</p></button>
+        <button class="card" data-act="clear-cache" type="button"><h3>Limpiar app</h3><p>No borra registros guardados.</p></button>
       </div>
     </div>` : "";
   render(`<div class="shell">
@@ -2871,8 +3572,7 @@ async function onScan(raw, keyFromScanner) {
 
   if (state.isProcessing || state.handlingScan) {
     const dniBusy = normalizeDni(key);
-    if (state.scanMode === "wrk" && dniBusy && personOnMesa(dniBusy)) {
-      warnRepeatedPerson(dniBusy);
+    if (state.scanMode === "wrk" && dniBusy && marcaDemasiadoPronto(dniBusy)) {
       return;
     }
     if (key && key !== state.lastDetectedQR) notifyScanWait();
@@ -2881,10 +3581,9 @@ async function onScan(raw, keyFromScanner) {
 
   if (state.scanMode === "wrk" && key) {
     const dniKey = normalizeDni(key);
-    const already = dniKey ? personOnMesa(dniKey) : null;
-    if (already) {
-      warnRepeatedPerson(dniKey, already);
+    if (dniKey && marcaDemasiadoPronto(dniKey)) {
       scanner.forget(dniKey);
+      if (Date.now() > (state.confirmUntil || 0)) warnRepeatedPerson(dniKey);
       return;
     }
   }
@@ -2918,11 +3617,12 @@ async function onScan(raw, keyFromScanner) {
         scanner.forget(state.lastDetectedQR);
       }
       const keepRepeat = Date.now() - (state.lastRepeatAt || 0) < 800;
-      if (!keepRepeat) {
+      const confirming = Date.now() < (state.confirmUntil || 0);
+      if (!keepRepeat && !confirming) {
         hideScanToast();
         if (state.view === "home" || state.view === "supervisor") {
           if (!(state.scanMode === "wrk" && isSendLocked())) {
-            setScanLive("Listo. Siguiente.");
+            setScanLive("Siguiente.");
           }
         }
       }
@@ -2953,24 +3653,20 @@ function completeWorkerScan(worker, dni, opId) {
     return true;
   }
 
-  if (personOnMesa(worker.dni)) {
-    warnRepeatedPerson(worker.dni, worker);
+  const id = normalizeDni(worker.dni || worker.id || dni);
+  asegurarEntradaPrevia(worker);
+  if (marcaDemasiadoPronto(id)) return true;
+  if (siguienteClase(marcasDe(id)) === "salida") {
+    showRetiroModal(worker);
     return true;
   }
-
-  const saved = registerPerson(worker);
+  const mark = registrarMarcacion(worker);
   if (opId !== state.scanOpId) return false;
-  if (!saved?.ok) return false;
-  try {
-    showScanHit({
-      dni: worker.dni,
-      sexo: personSexo(worker),
-      nombre: prepareSpeakName(worker) || twoApellidos(worker),
-      cargo: [nameParts(worker).nombre, worker.cargo].filter(Boolean).join(" · "),
-      ok: true,
-      note: "Registrado. Siguiente.",
-    });
-  } catch { /* tarjeta de UI opcional */ }
+  if (!mark.ok) {
+    if (mark.otra) speak("Escanee a la persona indicada.");
+    return true;
+  }
+  try { confirmarMarcacion(worker, mark); } catch { /* tarjeta de UI opcional */ }
   return true;
 }
 
@@ -3080,12 +3776,12 @@ function notifyUploaded(count) {
     lang: "es",
   };
   const fallback = () => {
-    try { new Notification("Solicitud de almuerzo", opts); } catch { /* sin permiso */ }
+    try { new Notification("Tareo", opts); } catch { /* sin permiso */ }
   };
   const ready = navigator.serviceWorker?.ready;
   if (!ready) { fallback(); return; }
   ready.then((reg) => {
-    if (reg?.showNotification) reg.showNotification("Solicitud de almuerzo", opts).catch(fallback);
+    if (reg?.showNotification) reg.showNotification("Tareo", opts).catch(fallback);
     else fallback();
   }).catch(fallback);
 }
@@ -3107,6 +3803,22 @@ function uniqueMesaPeople(list) {
     map.set(id, { ...(prev || {}), ...person, id, dni: id, menus: Math.max(menuQty(prev), menuQty(person)) });
   }
   return [...map.values()];
+}
+
+function marcasDeEnvio(people) {
+  const day = todayKey(TZ);
+  const want = new Set((people || []).map((p) => postDni(p.id || p.dni)));
+  return store.getJornada()
+    .filter((mark) => mark?.fecha === day && want.has(normalizeDni(mark.dni)))
+    .sort((a, b) => (a.at || 0) - (b.at || 0))
+    .map((mark) => ({
+      dni: normalizeDni(mark.dni),
+      apellido: mark.apellido || "",
+      nombre: mark.nombre || "",
+      hora: horaMinutos(mark.hora),
+      tipo: mark.tipo || "",
+      clase: mark.clase || "",
+    }));
 }
 
 function sentExtraDnis() {
@@ -3146,7 +3858,7 @@ function sendLista() {
   let extra = !!state.extraOn && hasSavedSend();
   if (state.extraOn && !extra) {
     state.extraOn = false;
-    showAlert("Todavía no", "Primero envíe el almuerzo normal. Extra solo después de ese envío.");
+    showAlert("Todavía no", "Primero envíe la jornada normal. Extra solo después de ese envío.");
     return;
   }
   const mesa = getMesa();
@@ -3167,10 +3879,12 @@ function sendLista() {
   const t = nowParts(TZ);
   const comida = currentLote();
   const existing = extra ? null : store.getCola().find((r) => r.type === "lista" && !r.payload?.extra && r.payload?.comida === comida);
-  const sendId = extra ? uuid() : (existing?.payload?.send_id || existing?.payload?.lote_lista_id || uuid());
+  const busy = !!(existing && isClientInflight(existing.clientId));
+  const sendId = extra || busy ? uuid() : (existing?.payload?.send_id || existing?.payload?.lote_lista_id || uuid());
   const n = mesaMealCount(people);
   const record = {
-    clientId: extra ? `extra:${t.fecha}:${sendId}` : (existing?.clientId || `lista:${t.fecha}:${sendId}`),
+    clientId: extra ? `extra:${t.fecha}:${sendId}` : (busy ? `lista:${t.fecha}:${sendId}` : (existing?.clientId || `lista:${t.fecha}:${sendId}`)),
+    rev: Date.now(),
     type: extra ? "extra" : "lista",
     payload: {
       fecha_local: t.fecha,
@@ -3198,6 +3912,7 @@ function sendLista() {
           menus: menuQty(p),
         };
       }),
+      marcas: marcasDeEnvio(people),
     },
     createdAt: extra ? Date.now() : (existing?.createdAt || Date.now()),
   };
@@ -3213,11 +3928,13 @@ function sendLista() {
   if (state.view === "home") refreshHomeLock();
   else show("home");
   const online = navigator.onLine;
-  const lugar = [currentComedor(), currentFundo()].filter(Boolean).join(", ");
   speak(extra
-    ? (online ? `Extra. ${n} ${mealWord(comida, n)} para ${lugar}.` : `Sin señal. Extra guardado para ${lugar}.`)
-    : (online ? `Se envió ${n} ${mealWord(comida, n)} a ${lugar}.` : `Sin señal. Almuerzo guardado para ${lugar}.`), { flush: true });
+    ? (online ? `Tareo extra. ${n} ${n === 1 ? "persona" : "personas"}.` : `Sin señal. Tareo extra guardado.`)
+    : (online ? `Tareo enviado. ${n} ${n === 1 ? "persona" : "personas"}.` : `Sin señal. Tareo guardado.`), { flush: true });
   saveAndSync(record).then(async (result) => {
+    if (online && result.status !== "enviado") {
+      speak("Quedó guardado. Se envía al tener señal.", { flush: true });
+    }
     const delivered = result.status === "enviado" && pendingCount() === 0;
     refreshPendPill();
     if (state.view === "home") refreshHomeLock();
@@ -3247,17 +3964,17 @@ function sendLista() {
           speak("Ya se envió desde otro celular");
           showAlert(
             "Ya envió",
-            "Este supervisor ya mandó el almuerzo de hoy desde otro celular. Si falta alguien, pulse Extra."
+            "Este jefe ya mandó el tareo de hoy desde otro celular. Si falta alguien, pulse Extra."
           );
           return;
         }
         store.clearTurnoDia();
         state.extraOn = false;
         if (state.view === "home") refreshHomeLock();
-        speak("No se guardó. Intente Enviar de nuevo como almuerzo.");
+        speak("No se guardó. Intente Enviar de nuevo como jornada.");
         showAlert(
-          "Reintente el almuerzo",
-          "El servidor no guardó esta lista. Pulse Enviar otra vez (Almuerzo normal). No use Extra todavía."
+          "Reintente el tareo",
+          "El servidor no guardó esta lista. Pulse Enviar otra vez (jornada normal). No use Extra todavía."
         );
         return;
       }
@@ -3265,7 +3982,7 @@ function sendLista() {
       speak("Ya se envió desde otro celular");
       showAlert(
         "Ya envió",
-        "Este supervisor ya mandó el almuerzo de hoy desde otro celular. Si falta alguien, pulse Extra."
+        "Este jefe ya mandó el tareo de hoy desde otro celular. Si falta alguien, pulse Extra."
       );
       return;
     }
@@ -3383,7 +4100,58 @@ async function onClick(e) {
     show(btn.dataset.id);
     return;
   }
+  if (act === "lunch-open") {
+    state.lunchClase = "";
+    showLunchModal(btn.dataset.id);
+    return;
+  }
+  if (act === "lunch-tick") {
+    const col = btn.closest(".clock-col");
+    if (!col) return;
+    col.scrollTo({ top: btn.offsetTop - (col.clientHeight - btn.offsetHeight) / 2, behavior: "auto" });
+    col.querySelectorAll(".clock-n.on").forEach((el) => el.classList.remove("on"));
+    btn.classList.add("on");
+    programarHora(true);
+    return;
+  }
+  if (act === "lunch-pick") {
+    state.lunchClase = btn.dataset.clase === "retorno" ? "retorno" : "almuerzo";
+    state.lunchDni = btn.dataset.id || state.lunchDni;
+    pintarOpcion();
+    state.lunchHablado = "";
+    hablarTareo(fraseMarcacion(state.lunchClase));
+    const mark = marcaAlmuerzo(state.lunchDni, state.lunchClase);
+    ponerReloj(mark?.hora || (state.lunchClase === "retorno" ? "13:00" : "12:00"));
+    return;
+  }
+  if (act === "retiro-si") {
+    const id = normalizeDni(btn.dataset.id || state.retiroDni);
+    const stamp = state.retiroStamp;
+    state.retiroDni = "";
+    state.retiroStamp = null;
+    dismissAlert();
+    const worker = findWorkerByDni(id) || personFromSaved(id);
+    if (worker) {
+      const mark = registrarMarcacion(worker, stamp);
+      if (mark.ok) confirmarMarcacion(worker, mark);
+    }
+    if (state.view === "home") refreshMesaUi();
+    if (state.view === "supervisor" || state.view === "home") resumeCam();
+    return;
+  }
+  if (act === "retiro-no") {
+    cerrarAvisoRetiro();
+    return;
+  }
   if (act === "dismiss-alert") {
+    const eraRetiro = !!state.retiroDni;
+    state.lunchDni = "";
+    state.lunchClase = "";
+    window.clearTimeout(state.lunchTimer);
+    if (eraRetiro) {
+      cerrarAvisoRetiro();
+      return;
+    }
     dismissAlert();
     if (state.view === "supervisor" || state.view === "home") resumeCam();
     return;
@@ -3450,10 +4218,10 @@ async function onClick(e) {
   }
   if (act === "toggle-fab") {
     const menu = document.getElementById("fab-menu");
-    const btn = document.getElementById("fab-options-btn");
     if (!menu) return;
-    menu.hidden = !menu.hidden;
-    btn?.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+    const open = menu.hidden;
+    menu.hidden = !open;
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
     return;
   }
   if (act === "go-historial") {
@@ -3461,6 +4229,7 @@ async function onClick(e) {
     state.histOpen = "";
     state.histPeoplePage = 1;
     state.histPeopleQuery = "";
+    state.histFecha = "";
     showHistorialModal();
     return;
   }
@@ -3474,6 +4243,12 @@ async function onClick(e) {
       state.histPeoplePage = 1;
       state.histPeopleQuery = "";
     }
+    showHistorialModal();
+    return;
+  }
+  if (act === "hist-fechas-recientes") {
+    state.histFecha = "";
+    state.histOpen = "";
     showHistorialModal();
     return;
   }
@@ -3540,8 +4315,8 @@ async function onClick(e) {
     for (const id of ids) {
       const worker = personFromSaved(id);
       if (!worker) continue;
-      const { already } = registerPerson(worker);
-      if (!already) added += 1;
+      const mark = registrarMarcacion(worker);
+      if (mark.ok && mark.primera) added += 1;
     }
     refreshMesaUi();
     dismissAlert();
@@ -3555,11 +4330,10 @@ async function onClick(e) {
       showAlert("No encontrado", "Ese DNI no está guardado.");
       return;
     }
-    const { already } = registerPerson(worker);
+    const mark = registrarMarcacion(worker);
     refreshMesaUi();
     showDniModal();
-    if (already) setScanLive("Ya está en el resumen.", true);
-    else setScanLive(`${twoApellidos(worker)} · en lista`, true);
+    setScanLive(mark.ok ? `${mark.label}. ${twoApellidos(worker)}` : "Espere para la siguiente marcación.", true);
     return;
   }
   if (act === "go-perfil") { showPerfilModal(); return; }
@@ -3609,7 +4383,7 @@ async function onClick(e) {
     refreshMesaUi();
     setScanLive("Supervisor en lista. Escanee al siguiente.", true);
     window.setTimeout(() => {
-      speak("Almuerzo del supervisor listo.", { flush: true });
+      speak("El jefe quedó en la lista.", { flush: true });
       resumeCam();
       refreshHomeLock();
     }, 40);
@@ -3639,34 +4413,22 @@ async function onClick(e) {
     showTempPersonModal();
     return;
   }
-  if (act === "pick-sexo") {
-    const box = btn.closest(".sexo-pick");
-    box?.querySelectorAll(".sexo-opt").forEach((el) => {
-      const on = el === btn;
-      el.classList.toggle("on", on);
-      el.setAttribute("aria-pressed", on ? "true" : "false");
-    });
-    document.getElementById("fTempSexo")?.classList.remove("bad");
-    return;
-  }
   if (act === "save-temp-person") {
     const dni = normalizeDni(document.getElementById("tempDni")?.value || "");
     const typed = String(document.getElementById("tempNombre")?.value || "").replace(/\s+/g, " ").trim();
-    const picked = document.querySelector(".sexo-opt.on")?.dataset.sexo || "";
     const official = /^\d{8}$/.test(dni) ? findOfficial(dni) : null;
     const nombre = official ? (displayName(official) || typed) : typed;
-    const sexo = personSexo(official) || (picked === "M" || picked === "F" ? picked : "");
     const dniOk = /^\d{8}$/.test(dni);
     document.getElementById("fTempDni")?.classList.toggle("bad", !dniOk);
     document.getElementById("fTempNom")?.classList.toggle("bad", dniOk && !official && !typed);
-    document.getElementById("fTempSexo")?.classList.toggle("bad", dniOk && !sexo);
-    if (!dniOk || !nombre || !sexo) {
-      speak(!dniOk ? "Falta el DNI." : (!nombre ? "Falta el nombre." : "Elija hombre o mujer."));
+    if (!dniOk || !nombre) {
+      speak(!dniOk ? "Falta el DNI." : "Falta el nombre.");
       return;
     }
     const parsed = nameParts({ nombreCompleto: nombre });
+    const sexo = personSexo(official);
     const worker = official
-      ? { ...official, sexo: personSexo(official) || sexo }
+      ? { ...official, ...(sexo ? { sexo } : {}) }
       : {
         dni,
         id: dni,
@@ -3675,12 +4437,11 @@ async function onClick(e) {
         nombreCompleto: parsed.nombreCompleto,
         cargo: "Temporal",
         temporal: true,
-        sexo,
       };
-    const { already } = registerPerson(worker);
+    const mark = registrarMarcacion(worker);
     dismissAlert();
     refreshMesaUi();
-    setScanLive(already ? "Ya está en el resumen." : "Temporal. Guardado en este celular.", true);
+    setScanLive(mark.ok ? `${mark.label}. ${mark.note}` : "Espere para la siguiente marcación.", !!mark.ok);
     return;
   }
   if (act === "ask-drop-mesa") {
@@ -3702,7 +4463,7 @@ async function onClick(e) {
   }
   if (act === "go-summary") {
     if (isSendLocked()) { warnLocked(); return; }
-    showSummaryModal();
+    sendLista();
     return;
   }
   if (act === "toggle-extra" || act === "ask-extra" || act === "confirm-extra") {
@@ -3732,7 +4493,6 @@ async function onClick(e) {
       const comedor = halls.includes(store.getPrefs().comedor) ? store.getPrefs().comedor : halls[0];
       store.setPrefs({ fundo: id, etapa: id, comedor });
       closePicks();
-      if (document.querySelector(".summary-modal")) showSummaryModal();
       return;
     }
     if (pick === "sel-comedor") store.setPrefs({ comedor: id });
@@ -3757,11 +4517,6 @@ async function onClick(e) {
     if (state.extraHold) {
       state.extraHold = false;
       if (state.view === "home") refreshHomeLock();
-      return;
-    }
-    if (document.querySelector(".summary-modal")) {
-      showSummaryModal();
-      return;
     }
     return;
   }
@@ -3769,7 +4524,6 @@ async function onClick(e) {
     const name = btn.dataset.id;
     if (!comedores().includes(name)) return;
     store.setPrefs({ comedor: name });
-    if (document.querySelector(".summary-modal")) showSummaryModal();
     return;
   }
   if (act === "page-prev") {
@@ -3860,17 +4614,17 @@ async function onClick(e) {
       showAlert("No está en la lista", "Ese DNI no está en trabajadores.");
       return;
     }
-    registerPerson(oficial);
+    registrarMarcacion(oficial);
     show("home");
     return;
   }
   if (act === "pick-w") {
     const w = findOfficial(btn.dataset.id);
     if (!w) {
-      showAlert("No está en la lista", "Solo supervisores de cosecha pueden pedir almuerzo.");
+      showAlert("No está en la lista", "Solo los jefes autorizados pueden registrar el tareo.");
       return;
     }
-    registerPerson(w);
+    registrarMarcacion(w);
     show("home");
   }
 }
@@ -3898,6 +4652,7 @@ async function boot() {
     if (span) span.textContent = phrase || "";
   });
   document.getElementById("app").addEventListener("click", (e) => {
+    if (!e.target.closest(".fab-wrap")) closeFab();
     onClick(e).catch(() => {
       state.handlingScan = false;
       state.isProcessing = false;
@@ -4061,7 +4816,7 @@ async function boot() {
     syncTurnoDelDia({ timeoutMs: 2200 }).then(() => refreshHomeLock());
   } else {
     show(hash === "supervisor" ? "supervisor" : "welcome", { replace: true });
-    if (state.view === "welcome" && !wasUpdating) speak("Bienvenido a Cocina Q Berries");
+    if (state.view === "welcome" && !wasUpdating) speak("Bienvenido a CIMPROMIN");
   }
   startAutoSync((summary) => {
     refreshPendPill();

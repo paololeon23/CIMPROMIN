@@ -1,4 +1,14 @@
 [[headers]]
+  for = "/install.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+[[headers]]
+  for = "/qr.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+[[headers]]
   for = "/"
   [headers.values]
     Cache-Control = "no-cache, must-revalidate"

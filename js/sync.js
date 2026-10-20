@@ -18,7 +18,17 @@ let linkWasOnline = true;
 let linkWasSlow = false;
 let preferPost = false;
 const inflight = new Map();
+const inflightRev = new Map();
 const activeFetches = new Set();
+
+function recordRev(record) {
+  const n = Number(record?.rev);
+  return Number.isFinite(n) ? n : 0;
+}
+
+export function isClientInflight(clientId) {
+  return inflight.has(String(clientId || ""));
+}
 
 function netInfo() {
   return navigator.connection || navigator.mozConnection || navigator.webkitConnection || null;
@@ -204,13 +214,18 @@ export async function pingServer(url) {
 
 async function deliverRecord(record, url) {
   const u = (url || store.getScriptUrl()).trim();
-  const stamped = { ...record, payload: stampPayload(record.payload || {}) };
-  store.upsertCola(stamped);
+  const rev = recordRev(record);
+  const current = store.getCola().find((r) => r.clientId === record.clientId);
+  if (current && recordRev(current) > rev) return { skipped: true, record: current };
+  const stamped = { ...record, rev, payload: stampPayload(record.payload || {}) };
+  const again = store.getCola().find((r) => r.clientId === stamped.clientId);
+  if (!again || recordRev(again) <= rev) store.upsertCola(stamped);
   if (!u) throw new Error("sin_url");
   if (isBrowserOffline()) throw new Error("sin_red");
   const body = JSON.stringify({
     type: stamped.type,
     clientId: stamped.clientId,
+    rev: stamped.rev || Date.now(),
     payload: stamped.payload,
     clientVersion: APP_VERSION,
   });
@@ -245,12 +260,24 @@ async function deliverRecord(record, url) {
 
 export function postRecord(record, url) {
   const id = String(record?.clientId || "");
-  if (id && inflight.has(id)) return inflight.get(id);
+  const rev = recordRev(record);
+  if (id && inflight.has(id)) {
+    const flying = inflight.get(id);
+    if (!rev || rev <= (inflightRev.get(id) || 0)) return flying;
+    return flying.catch(() => {}).then(() => {
+      const latest = store.getCola().find((r) => r.clientId === id) || record;
+      return postRecord(latest, url);
+    });
+  }
   const job = deliverRecord(record, url);
   if (id) {
     inflight.set(id, job);
+    inflightRev.set(id, rev);
     job.finally(() => {
-      if (inflight.get(id) === job) inflight.delete(id);
+      if (inflight.get(id) === job) {
+        inflight.delete(id);
+        inflightRev.delete(id);
+      }
     }).catch(() => {});
   }
   return job;
@@ -267,8 +294,16 @@ function flushRank(record) {
 }
 
 function confirmSent(result) {
+  if (!result?.record || result.skipped) return;
+  const id = result.record.clientId;
+  const rev = recordRev(result.record);
+  const current = store.getCola().find((r) => r.clientId === id);
   store.pushHistorial({ ...result.record, duplicate: result.duplicate, confirmed: true });
-  store.removeCola(result.record.clientId);
+  if (current && recordRev(current) > rev) {
+    scheduleRetry(true);
+    return;
+  }
+  store.removeCola(id);
   markListaTurno(result.record, result.raw);
 }
 
@@ -283,6 +318,11 @@ export async function saveAndSync(record) {
   try {
     const result = await postRecord(queued);
     confirmSent(result);
+    if (result.skipped || stillQueued(queued.clientId)) {
+      scheduleRetry(true);
+      armBackgroundSync();
+      return { status: "pendiente", record: store.getCola().find((r) => r.clientId === queued.clientId) || queued };
+    }
     if (!pendingRecords().length) {
       clearRetry();
       retryDelay = RETRY_MIN_MS;
@@ -341,7 +381,9 @@ async function flushPass(onEach) {
     pass += 1;
     try {
       const result = await postRecord(record);
+      if (result.skipped) continue;
       confirmSent(result);
+      if (stillQueued(record.clientId)) continue;
       fails = 0;
       if (result.duplicate) summary.duplicates += 1;
       else summary.sent += 1;

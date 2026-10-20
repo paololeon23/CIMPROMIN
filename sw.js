@@ -1,4 +1,4 @@
-const CACHE_NAME = "cocina-qb-v252";
+const CACHE_NAME = "cocina-qb-v312";
 
 const SHELL = [
   "./",
@@ -15,7 +15,7 @@ const SHELL = [
   "./js/scanner.js",
   "./data/config.json",
   "./data/supervisors.json",
-  "./assets/logo-qberries.png",
+  "./assets/CIMPROMIN_alta_calidad.png",
   "./icons/icon-192.png",
   "./icons/apple-touch-icon.png",
 ];
@@ -24,8 +24,6 @@ const LATER = [
   "./js/vendor/jsqr.js",
   "./data/trabajadores.json",
   "./icons/icon-512.png",
-  "./assets/hombre.png",
-  "./assets/mujer.png",
 ];
 
 const PRECACHE = SHELL.concat(LATER);
@@ -138,6 +136,15 @@ self.addEventListener("fetch", (event) => {
 
   const offline = self.navigator && self.navigator.onLine === false;
   const missed = () => new Response("", { status: 504, statusText: "offline" });
+
+  if (url.pathname.endsWith("/install.html") || url.pathname.endsWith("/qr.html")) {
+    event.respondWith(
+      offline
+        ? fromCache(req).then((hit) => hit || missed())
+        : fetch(req, { cache: "no-store" }).catch(() => fromCache(req).then((hit) => hit || missed()))
+    );
+    return;
+  }
 
   if (wantsNetwork(req)) {
     event.respondWith(
@@ -272,6 +279,7 @@ async function flushClosedApp() {
           body: JSON.stringify({
             type: record.type,
             clientId: record.clientId,
+            rev: record.rev || record.createdAt || Date.now(),
             payload: record.payload || {},
             clientVersion: "1.3.92",
           }),
@@ -287,6 +295,11 @@ async function flushClosedApp() {
         if (json?.error === "sin_almuerzo") continue;
         throw new Error(json?.error || "sin_confirmacion");
       }
+      const freshWrap = await outboxGet(db, "cola_pendiente");
+      const fresh = Array.isArray(freshWrap?.list)
+        ? freshWrap.list.find((row) => row && row.clientId === record.clientId)
+        : null;
+      if (fresh && Number(fresh.rev) > Number(record.rev || 0)) continue;
       done.push({ clientId: record.clientId, duplicate: !!json.duplicate, at: Date.now() });
       doneIds.add(record.clientId);
       uploaded += 1;
@@ -299,7 +312,7 @@ async function flushClosedApp() {
         ? "Tu pendiente se subió correctamente."
         : "Tus pendientes se subieron correctamente.";
       try {
-        await self.registration.showNotification("Solicitud de almuerzo", {
+        await self.registration.showNotification("Tareo", {
           body,
           icon: "./icons/icon-192.png",
           badge: "./icons/icon-192.png",

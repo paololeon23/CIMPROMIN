@@ -3,47 +3,48 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-  <meta name="theme-color" content="#1f3d2a" />
+  <meta name="theme-color" content="#063B70" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-title" content="Solicitud de almuerzo" />
+  <meta name="apple-mobile-web-app-title" content="Tareo" />
   <meta name="mobile-web-app-capable" content="yes" />
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="icon" href="./icons/icon-192.png" type="image/png" />
-  <title>Instalar Solicitud de almuerzo</title>
+  <title>Instalar Tareo</title>
   <style>
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100%; background: #fff; color: #111; font-family: "Segoe UI", system-ui, sans-serif; }
+    html, body { margin: 0; min-height: 100%; background: #f4f6f8; color: #151a1f; font-family: "Segoe UI", system-ui, sans-serif; }
     body { padding: 28px 20px calc(24px + env(safe-area-inset-bottom)); text-align: center; }
     .logo { width: 72px; height: auto; }
-    .kicker { margin: 10px 0 0; color: #dc2626; font-size: 10px; font-weight: 800; letter-spacing: 0.1em; }
+    .kicker { margin: 10px 0 0; color: #063b70; font-size: 11px; font-weight: 800; letter-spacing: 0.14em; }
     h1 { margin: 8px 0 8px; font-size: 24px; }
     .sub { margin: 0 0 20px; color: #6f6f6f; font-size: 15px; line-height: 1.4; }
     .icon { width: 72px; height: 72px; border-radius: 18px; margin: 8px auto 12px; display: block; }
     .btn {
       display: flex; align-items: center; justify-content: center; gap: 10px;
       width: min(100%, 360px); min-height: 52px; margin: 0 auto 12px;
-      border: 0; border-radius: 16px; background: #1f3d2a; color: #fff;
+      border: 0; border-radius: 14px; background: #063b70; color: #fff;
       font-size: 16px; font-weight: 800;
     }
-    .btn.ghost { background: #fff; color: #1f3d2a; box-shadow: inset 0 0 0 1.5px #1f3d2a; }
+    .btn.ghost { background: #fff; color: #063b70; box-shadow: inset 0 0 0 1.5px #063b70; }
     .steps { margin: 0 auto; padding: 0; max-width: 360px; text-align: left; list-style: none; }
     .steps li {
       display: flex; gap: 12px; align-items: flex-start;
       margin: 0 0 12px; padding: 12px 14px; border: 1px solid #eceff1; border-radius: 14px;
       font-size: 15px; line-height: 1.35;
     }
-    .n { flex: 0 0 24px; height: 24px; border-radius: 99px; background: #1f3d2a; color: #fff; font-size: 13px; font-weight: 800; display: grid; place-items: center; }
+    .n { flex: 0 0 24px; height: 24px; border-radius: 99px; background: #063b70; color: #fff; font-size: 13px; font-weight: 800; display: grid; place-items: center; }
     .note { margin: 16px auto 0; max-width: 360px; color: #9a3412; font-size: 13px; font-weight: 650; }
     .ok { color: #166534; }
     .hide { display: none; }
   </style>
 </head>
 <body>
-  <img class="logo" src="./assets/logo-qberries.png" alt="Q Berries" />
-  <p class="kicker">Q BERRIES</p>
-  <h1>Solicitud de almuerzo</h1>
+  <img class="logo" src="./assets/CIMPROMIN_alta_calidad.png" alt="CIMPROMIN" />
+  <p class="kicker">CIMPROMIN</p>
+  <h1>Tareo de personal</h1>
   <p class="sub" id="sub">Así queda en el celular, como una app.</p>
+  <p class="sub ok hide" id="fresh">Actualizando…</p>
   <img class="icon" src="./icons/icon-192.png" alt="" />
 
   <div id="android" class="hide">
@@ -57,7 +58,7 @@
     <ol class="steps">
       <li><span class="n">1</span><span>Si esto se abrió en WhatsApp u otra app, toque <b>Abrir en Safari</b>.</span></li>
       <li><span class="n">2</span><span>En Safari, toque el botón <b>Compartir</b> (cuadrado con flecha).</span></li>
-      <li><span class="n">3</span><span>Toque <b>Agregar a pantalla de inicio</b>. El nombre es Solicitud de almuerzo.</span></li>
+      <li><span class="n">3</span><span>Toque <b>Agregar a pantalla de inicio</b>. El nombre es Tareo.</span></li>
     </ol>
     <p class="note" id="iosNote">Apple no deja instalar automático. Es el camino de iPhone.</p>
     <a class="btn ghost" href="./index.html">Entrar en Safari</a>
@@ -75,16 +76,37 @@
     let deferred = null;
     const $ = (id) => document.getElementById(id);
 
-    if (standalone) {
-      location.replace("./index.html");
-    } else if (android) {
+    async function actualizarApp() {
+      const fresh = $("fresh");
+      if (fresh) {
+        fresh.classList.remove("hide");
+        fresh.textContent = "Actualizando la app…";
+      }
+      try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((reg) => reg.unregister()));
+        if ("caches" in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((key) => caches.delete(key)));
+        }
+        if (fresh) fresh.textContent = "App actualizada. Entre de nuevo para usar esta versión.";
+      } catch {
+        if (fresh) fresh.textContent = "Ábrala con internet una vez para actualizar.";
+      }
+    }
+
+    actualizarApp().then(() => {
+      if (standalone) location.replace("./index.html");
+    });
+
+    if (!standalone && android) {
       $("android").classList.remove("hide");
-    } else if (ios) {
+    } else if (!standalone && ios) {
       $("iphone").classList.remove("hide");
       if (!/Safari/i.test(ua) || /CriOS|FxiOS|EdgiOS|Instagram|FBAN|FBAV|WhatsApp/i.test(ua)) {
         $("iosNote").textContent = "Ábralo en Safari. Desde WhatsApp no se puede agregar a inicio.";
       }
-    } else {
+    } else if (!standalone) {
       $("other").classList.remove("hide");
     }
 

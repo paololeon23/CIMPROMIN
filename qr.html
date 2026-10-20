@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Instalar Solicitud de almuerzo</title>
+  <title>Instalar Tareo</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -13,8 +13,8 @@
       place-items: center;
       padding: 24px;
       font-family: "Segoe UI", system-ui, sans-serif;
-      background: #fff;
-      color: #111;
+      background: #f4f6f8;
+      color: #151a1f;
       text-align: center;
     }
     img.logo { width: 72px; height: auto; }
@@ -34,7 +34,7 @@
       margin: 0 0 18px;
       font-size: 13px;
       word-break: break-all;
-      color: #1f3d2a;
+      color: #063b70;
     }
     ol {
       margin: 0 auto;
@@ -52,11 +52,12 @@
 </head>
 <body>
   <div>
-    <img class="logo" src="./assets/logo-qberries.png" alt="Q Berries" />
-    <h1>Solicitud de almuerzo</h1>
+    <img class="logo" src="./assets/CIMPROMIN_alta_calidad.png" alt="CIMPROMIN" />
+    <h1>Tareo de personal</h1>
     <p>Escanea con el celular para abrir e instalar la app.</p>
     <img class="qr" src="./assets/qr-instalar.png" alt="QR para instalar la app" />
-    <code>https://almuerzo-qberries.netlify.app/install.html</code>
+    <code id="url">/install.html</code>
+    <script>document.getElementById("url").textContent = location.origin + "/install.html";</script>
     <ol>
       <li>Android: abre en Chrome y toca <b>Instalar aplicación</b>.</li>
       <li>iPhone: ábrelo en Safari → Compartir → <b>Agregar a pantalla de inicio</b>.</li>

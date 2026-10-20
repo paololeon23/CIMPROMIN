@@ -144,7 +144,7 @@ function persistList(key, list) {
   return ok;
 }
 
-const PERSISTED_LISTS = [STORAGE_KEYS.cola, STORAGE_KEYS.mesa, STORAGE_KEYS.historial];
+const PERSISTED_LISTS = [STORAGE_KEYS.cola, STORAGE_KEYS.mesa, STORAGE_KEYS.historial, STORAGE_KEYS.jornada];
 
 function localStamp(key) {
   try { return Number(localStorage.getItem(`${key}@at`)) || 0; } catch { return 0; }
@@ -160,12 +160,21 @@ function lsKeyExists(key) {
 
 async function hydrateKv() {
   try {
-    const keys = [STORAGE_KEYS.cola, STORAGE_KEYS.mesa, STORAGE_KEYS.historial];
+    const keys = [STORAGE_KEYS.cola, STORAGE_KEYS.mesa, STORAGE_KEYS.historial, STORAGE_KEYS.jornada];
     for (const key of keys) {
       const fromIdb = await idbGetKv(key);
       const idbList = Array.isArray(fromIdb) ? fromIdb : fromIdb?.list;
       const idbAt = Array.isArray(fromIdb) ? 0 : Number(fromIdb?.at) || 0;
-      if (!Array.isArray(idbList)) continue;
+      if (!Array.isArray(idbList)) {
+        try {
+          const raw = localStorage.getItem(key);
+          const localList = raw ? JSON.parse(raw) : null;
+          if (Array.isArray(localList) && localList.length) {
+            idbPutKv(key, { at: Date.now(), list: localList });
+          }
+        } catch { /* localStorage sigue */ }
+        continue;
+      }
       if (!lsKeyExists(key)) {
         if (idbList.length) write(key, idbList);
         continue;
@@ -429,6 +438,23 @@ export const store = {
   },
   clearMesa() {
     persistList(STORAGE_KEYS.mesa, []);
+  },
+  getJornada() {
+    const raw = read(STORAGE_KEYS.jornada, []);
+    if (!Array.isArray(raw)) return [];
+    const keep = Date.now() - 21 * 24 * 60 * 60 * 1000;
+    const list = raw.filter((m) => m && m.dni && m.fecha && m.at && m.at >= keep);
+    if (list.length !== raw.length) persistList(STORAGE_KEYS.jornada, list);
+    return list;
+  },
+  addMarcacion(row) {
+    const list = this.getJornada();
+    list.push(row);
+    persistList(STORAGE_KEYS.jornada, list);
+    return row;
+  },
+  setJornada(list) {
+    persistList(STORAGE_KEYS.jornada, Array.isArray(list) ? list : []);
   },
   getScriptUrl() {
     return (this.getPrefs().scriptUrl || localStorage.getItem(STORAGE_KEYS.scriptUrl) || "").trim();

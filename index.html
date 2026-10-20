@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-  <meta name="theme-color" content="#ffffff" />
+  <meta name="theme-color" content="#063B70" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="format-detection" content="telephone=no" />
   <meta name="referrer" content="no-referrer" />
-  <title>Solicitud de almuerzo</title>
-  <link rel="manifest" href="./manifest.webmanifest" />   
+  <title>Tareo</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="icon" href="./icons/icon-192.png" type="image/png" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./css/app.css" />
@@ -20,7 +20,7 @@
       position: fixed;
       inset: 0;
       z-index: 99999;
-      background: #fff;
+      background: #f4f6f8;
       flex-direction: column;
       align-items: center;
       justify-content: center;
@@ -35,14 +35,14 @@
       visibility: visible;
       pointer-events: auto;
     }
-    html.is-updating, html.is-updating body { background: #fff; }
-    #update-veil .login-kicker { margin: 0 0 8px; color: #dc2626; font-size: 10px; font-weight: 800; letter-spacing: 0.1em; }
-    #update-veil h3 { margin: 0 0 6px; font-size: 22px; }
-    #update-veil > p { margin: 0 0 20px; color: #6f6f6f; font-size: 15px; }
-    #update-veil .login-bar { width: min(240px, 72vw); height: 10px; border-radius: 99px; background: #eef2ef; overflow: hidden; }
-    #update-veil .login-bar > i { display: block; height: 100%; width: 0%; border-radius: 99px; background: #1f3d2a; }
+    html.is-updating, html.is-updating body { background: #f4f6f8; }
+    #update-veil .login-kicker { margin: 0 0 8px; color: #063b70; font-size: 11px; font-weight: 800; letter-spacing: 0.14em; }
+    #update-veil h3 { margin: 0 0 6px; font-size: 22px; color: #151a1f; }
+    #update-veil > p { margin: 0 0 20px; color: #64748b; font-size: 15px; }
+    #update-veil .login-bar { width: min(240px, 72vw); height: 6px; border-radius: 99px; background: #e6ebf0; overflow: hidden; }
+    #update-veil .login-bar > i { display: block; height: 100%; width: 0%; border-radius: 99px; background: #063b70; }
     html.update-full #update-veil .login-bar > i { width: 100%; }
-    #update-veil .login-pct { margin: 12px 0 0; font-size: 13px; font-weight: 800; color: #1f3d2a; }
+    #update-veil .login-pct { margin: 12px 0 0; font-size: 13px; font-weight: 800; color: #063b70; }
     #update-veil .update-mark { width: 56px; height: auto; margin: 0 auto 10px; }
     html.update-done #update-veil { opacity: 0; visibility: hidden; transition: opacity 0.35s ease, visibility 0.35s ease; }
   </style>
@@ -58,8 +58,8 @@
 </head>
 <body>
   <div id="update-veil" aria-hidden="true">
-    <img class="update-mark" src="./assets/logo-qberries.png" alt="" />
-    <p class="login-kicker">Q BERRIES</p>
+    <img class="update-mark" src="./assets/CIMPROMIN_alta_calidad.png" alt="" />
+    <p class="login-kicker">CIMPROMIN</p>
     <h3 id="update-title">Actualizando app</h3>
     <p id="update-sub">Un momento. Traemos la versión nueva.</p>
     <div class="login-bar"><i id="update-bar"></i></div>
