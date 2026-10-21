@@ -1,4 +1,4 @@
-const CACHE_NAME = "cocina-qb-v312";
+const CACHE_NAME = "cocina-qb-v333";
 
 const SHELL = [
   "./",

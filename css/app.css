@@ -613,8 +613,10 @@ body.modal-open .emerg-dock { pointer-events: none; }
   border-radius: 16px;
 }
 .empty-mesa .fork { margin: 0 auto 8px; }
-.mesa-find { display: block; margin: 0 0 10px; }
+.mesa-find-row { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+.mesa-find { display: block; flex: 1; min-width: 0; margin: 0; }
 .mesa-find .dni-search { margin: 0; }
+.lunch-btn.lunch-mass { flex: 0 0 auto; }
 
 .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
 .stat {
@@ -1065,12 +1067,19 @@ body.modal-open .emerg-dock { pointer-events: none; }
   padding: 8px 12px 10px;
   border-top: 1px solid var(--line);
 }
-.jornada-side { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.jornada-side { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .jornada-side.right { justify-content: flex-end; }
 .jornada-line {
   display: inline-flex;
   align-items: baseline;
+  justify-content: center;
+  box-sizing: border-box;
+  width: min(100%, 124px);
   gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid rgba(21, 26, 31, 0.12);
+  border-radius: 8px;
+  background: #ffffff;
   font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.01em;
@@ -1079,6 +1088,7 @@ body.modal-open .emerg-dock { pointer-events: none; }
 .jornada-line b { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink); }
 .jornada-line.in { color: var(--green-deep); }
 .jornada-line.out { color: var(--navy); }
+.jornada-arrow { flex: 0 0 auto; align-self: center; opacity: 0.9; }
 .lunch-btn {
   position: relative;
   display: grid;
@@ -1093,40 +1103,43 @@ body.modal-open .emerg-dock { pointer-events: none; }
   margin: 0;
   padding: 0;
   border: 0;
-  border-radius: 50%;
+  border-radius: 12px;
   justify-self: center;
   align-self: center;
   line-height: 0;
-  overflow: hidden;
-  background: #e7eef6;
-  color: #063b70;
+  overflow: visible;
+  background: transparent;
   cursor: pointer;
 }
-.lunch-btn::before,
-.lunch-btn.on::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  padding: 2.5px;
-  background: conic-gradient(#063b70 0 72%, #3f6d99 86%, #063b70 100%);
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  mask-composite: exclude;
-  animation: lunch-ring 1.6s linear infinite;
-  pointer-events: none;
-}
-@keyframes lunch-ring {
-  to { transform: rotate(360deg); }
-}
 .lunch-btn:active { transform: none; }
-.lunch-btn.on {
-  background: #e7eef6;
-  color: #063b70;
+.lunch-btn:active .fork { transform: scale(0.96); }
+.lunch-btn .fork {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: linear-gradient(160deg, #0b4f8f 0%, #063b70 55%, #042c54 100%);
+  color: #ffffff;
+  box-shadow: 0 3px 10px rgba(6, 59, 112, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
 }
-.lunch-btn .fork { display: grid; place-items: center; }
-.lunch-modal { text-align: center; padding-top: 26px; }
+.lunch-btn.on .fork,
+.lunch-btn.ok .fork {
+  background: linear-gradient(160deg, #1f9a6c 0%, #16845b 55%, #116b4a 100%);
+  box-shadow: 0 3px 10px rgba(17, 107, 74, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+.lunch-modal {
+  text-align: center;
+  padding-top: 26px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.lunch-modal::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .lunch-modal h2 {
   margin: 2px 0 0;
   font-size: 22px;
@@ -1149,81 +1162,108 @@ body.modal-open .emerg-dock { pointer-events: none; }
   color: var(--ink-soft);
 }
 .lunch-hint {
-  margin: 4px 8px 14px;
+  margin: 10px 8px 12px;
   font-size: 13px;
   line-height: 1.45;
   color: var(--ink-soft);
 }
 .lunch-hint.bad { color: #c83a3a; font-weight: 750; }
-.clock-label {
-  margin: 12px 0 0;
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ink-soft);
+.time-picker-modal {
+  margin: 14px 0 0;
+  padding: 14px 12px 12px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(6, 59, 112, 0.1);
 }
-.clock {
-  position: relative;
-  display: grid;
-  grid-template-columns: 1fr 16px 1fr;
+.time-picker-head {
+  display: flex;
   align-items: center;
-  height: 148px;
-  margin: 8px 0 0;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 12px;
 }
-.clock::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 50%;
-  height: 44px;
-  transform: translateY(-50%);
-  border-radius: 12px;
-  background: #e7eef6;
-  box-shadow: inset 0 0 0 1px rgba(6, 59, 112, 0.16);
-  pointer-events: none;
+.time-picker-title {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #063b70;
 }
-.clock-col {
-  height: 148px;
-  overflow-y: auto;
-  scroll-snap-type: y mandatory;
-  position: relative;
-  z-index: 1;
-  scrollbar-width: none;
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 22%, #000 78%, transparent);
-  mask-image: linear-gradient(to bottom, transparent, #000 22%, #000 78%, transparent);
+.time-picker-current {
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #063b70;
 }
-.clock-col::-webkit-scrollbar { display: none; }
-.clock-pad { display: block; height: 52px; }
-.clock-n {
+.time-picker-wheel {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+.time-picker-col {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+.time-picker-step {
   display: grid;
   place-items: center;
   width: 100%;
-  height: 44px;
-  scroll-snap-align: center;
-  background: transparent;
-  color: #8b95a1;
-  font-size: 16px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
+  min-height: 40px;
+  border-radius: 12px;
+  background: #e7eef6;
+  color: #063b70;
+  font-size: 14px;
+  font-weight: 700;
 }
-.clock-n.on { color: #063b70; font-size: 22px; font-weight: 800; }
-.clock-n:active { transform: none; }
-.clock-sep {
-  z-index: 1;
-  text-align: center;
-  font-size: 22px;
+.time-picker-value {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 64px;
+  border-radius: 14px;
+  background: #e7eef6;
+  color: #063b70;
+  font-size: 36px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.time-picker-sep {
+  font-size: 28px;
   font-weight: 800;
   color: #063b70;
 }
-.lunch-actions { display: grid; gap: 8px; }
+.time-picker-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.time-picker-actions .btn:last-child {
+  grid-column: 1 / -1;
+  min-height: 48px;
+}
+.time-picker-actions .btn.ghost {
+  min-height: 44px;
+  background: #e7eef6;
+  color: #063b70;
+  box-shadow: none;
+}
+.lunch-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
 .lunch-actions .btn {
   flex-direction: column;
   gap: 2px;
   width: 100%;
   min-height: 56px;
+  padding: 10px 8px;
   line-height: 1.15;
+  font-size: 13px;
 }
 .lunch-actions small { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
 .lunch-actions .btn.lunch-on {
@@ -1231,7 +1271,7 @@ body.modal-open .emerg-dock { pointer-events: none; }
   color: #fff;
   box-shadow: none;
 }
-.lunch-close { width: 100%; margin-top: 8px; }
+.lunch-close { width: 100%; min-height: 48px; margin-top: 10px; }
 .retiro-actions { display: grid; gap: 8px; margin-top: 14px; }
 .retiro-actions .btn { width: 100%; min-height: 52px; }
 .lunch-mark {
@@ -1365,9 +1405,9 @@ body.modal-open .emerg-dock { pointer-events: none; }
   .welcome { background: var(--paper); }
   .welcome .welcome-hero { background: #063b70; }
   #app:has(.lock) {
-    width: 100%;
+  width: 100%;
     margin: 0;
-    background: transparent;
+  background: transparent;
     box-shadow: none;
   }
   .modal { border-radius: 20px; margin: auto; }

@@ -132,6 +132,11 @@ const state = {
   lunchHold: false,
   lunchTimer: 0,
   lunchHablado: "",
+  lunchHH: "12",
+  lunchMM: "00",
+  lunchMasivo: false,
+  massIni: "12:00",
+  massFin: "13:00",
   admin: false,
   logoTaps: 0,
   mesaPage: 1,
@@ -1801,13 +1806,17 @@ function claseMarcacion(mark, index) {
   return index > 0 ? "retorno" : "entrada";
 }
 
+function esMarcaAlmuerzo(mark) {
+  return mark?.clase === "almuerzo" || mark?.clase === "retorno";
+}
+
 function siguienteClase(previas, hora) {
-  const last = previas.at(-1);
+  // El almuerzo va por el tenedor con hora editable; el escaneo solo mira entrada y salida.
+  const scans = (previas || []).filter((m) => !esMarcaAlmuerzo(m));
+  const last = scans.at(-1);
   if (!last) return "entrada";
-  const clase = claseMarcacion(last, previas.length - 1);
+  const clase = claseMarcacion(last, scans.length - 1);
   if (clase === "entrada") return "salida";
-  if (clase === "almuerzo") return "retorno";
-  if (clase === "retorno") return "salida";
   return "entrada";
 }
 
@@ -1820,8 +1829,10 @@ function marcasDe(dni, fecha = todayKey(TZ)) {
 }
 
 function marcaDemasiadoPronto(dni) {
-  const last = marcasDe(dni).at(-1);
-  return !!(last && Date.now() - last.at < MARCA_GAP_MS);
+  const last = marcasDe(dni).filter((m) => !esMarcaAlmuerzo(m)).at(-1);
+  if (!last) return false;
+  const gap = Date.now() - (last.at || 0);
+  return gap >= 0 && gap < MARCA_GAP_MS;
 }
 
 function semanaActual() {
@@ -1951,75 +1962,77 @@ function showLunchModal(dni, claseKeep) {
   else state.lunchClase = salio && !entro ? "retorno" : "almuerzo";
   const elegida = state.lunchClase === "retorno" ? entro : salio;
   const hora = elegida?.hora || (state.lunchClase === "retorno" ? "13:00" : "12:00");
-  const [hh, mm] = hora.split(":");
+  ponerReloj(hora);
   const nombre = displayName(who);
+  const entradaDia = marcasDe(id).find((m) => m.clase === "entrada") || null;
   const on = (clase) => state.lunchClase === clase ? " lunch-on" : "";
   const aviso = avisoGuardado();
   openAlert(`<div class="modal-back" data-act="dismiss-alert">
     <div class="modal summary-modal lunch-modal" role="dialog" aria-modal="true" data-act="stay">
-      <div class="lunch-mark">${forkIcon()}</div>
       <h2>Almuerzo</h2>
       <p class="lunch-name">${esc(nombre || id)}</p>
-      ${nombre ? `<p class="lunch-dni">DNI ${esc(id)}</p>` : ""}
-      <p class="clock-label">Hora real</p>
-      <div class="clock" id="lunch-hora">
-        <div class="clock-col" data-part="h">${relojCol("h", 23, hh)}</div>
-        <b class="clock-sep" aria-hidden="true">:</b>
-        <div class="clock-col" data-part="m">${relojCol("m", 59, mm)}</div>
+      <p class="lunch-dni">${entradaDia ? `Entrada ${esc(horaMinutos(entradaDia.hora))}` : "Sin entrada"}</p>
+      <div class="time-picker-modal">
+        <div class="time-picker-head">
+          <div class="time-picker-title">Seleccionar hora</div>
+          <div class="time-picker-current" id="time-picker-current">${esc(horaReloj())}</div>
+        </div>
+        <div class="time-picker-wheel" id="lunch-hora">
+          <div class="time-picker-col">
+            <button type="button" class="time-picker-step" data-act="lunch-step" data-part="h" data-dir="1" aria-label="Subir hora">▲</button>
+            <div class="time-picker-value" id="time-picker-hour">${esc(state.lunchHH)}</div>
+            <button type="button" class="time-picker-step" data-act="lunch-step" data-part="h" data-dir="-1" aria-label="Bajar hora">▼</button>
+          </div>
+          <div class="time-picker-sep">:</div>
+          <div class="time-picker-col">
+            <button type="button" class="time-picker-step" data-act="lunch-step" data-part="m" data-dir="1" aria-label="Subir minuto">▲</button>
+            <div class="time-picker-value" id="time-picker-minute">${esc(state.lunchMM)}</div>
+            <button type="button" class="time-picker-step" data-act="lunch-step" data-part="m" data-dir="-1" aria-label="Bajar minuto">▼</button>
+          </div>
+        </div>
+        <div class="time-picker-actions">
+          <button type="button" class="btn ghost" data-act="lunch-now">Tomar hora exacta</button>
+          <button type="button" class="btn ghost" data-act="lunch-cancel">Cancelar</button>
+          <button type="button" class="btn" data-act="lunch-apply">Tomar hora</button>
+        </div>
       </div>
       <p class="lunch-hint${aviso ? " bad" : ""}" id="lunch-aviso">${aviso ? esc(aviso) : "Si hay cola, corrija la hora. Así nadie sale perjudicado."}</p>
       <div class="lunch-actions">
-        <button class="btn ghost${on("almuerzo")}" data-act="lunch-pick" data-clase="almuerzo" data-id="${esc(id)}" type="button">Salió a almorzar<small>${esc(salio?.hora || "12:00")}</small></button>
-        <button class="btn ghost${on("retorno")}" data-act="lunch-pick" data-clase="retorno" data-id="${esc(id)}" type="button">Entró<small>${esc(entro?.hora || "13:00")}</small></button>
+        <button class="btn ghost${on("almuerzo")}" data-act="lunch-pick" data-clase="almuerzo" data-id="${esc(id)}" type="button">Inicio almuerzo<small>${esc(salio?.hora || "12:00")}</small></button>
+        <button class="btn ghost${on("retorno")}" data-act="lunch-pick" data-clase="retorno" data-id="${esc(id)}" type="button">Fin de almuerzo<small>${esc(entro?.hora || "13:00")}</small></button>
       </div>
-      <button class="btn ghost lunch-close" data-act="dismiss-alert" type="button">Cerrar</button>
+      <button class="btn lunch-close" data-act="lunch-save" type="button">Guardar</button>
     </div>
   </div>`);
-  alinearReloj();
 }
 
-function relojCol(part, max, current) {
-  let html = `<span class="clock-pad"></span>`;
-  for (let i = 0; i <= max; i++) {
-    const v = String(i).padStart(2, "0");
-    html += `<button type="button" class="clock-n${v === current ? " on" : ""}" data-act="lunch-tick" data-part="${part}" data-v="${v}">${v}</button>`;
-  }
-  return html + `<span class="clock-pad"></span>`;
-}
-
-function alinearReloj() {
-  const root = document.getElementById("lunch-hora");
-  if (!root) return;
-  const place = () => {
-    state.lunchHold = true;
-    root.querySelectorAll(".clock-col").forEach((col) => {
-      if (!col.dataset.bound) {
-        col.dataset.bound = "1";
-        col.addEventListener("scroll", () => marcarReloj(col), { passive: true });
-      }
-      const on = col.querySelector(".clock-n.on");
-      if (on) col.scrollTop = on.offsetTop - (col.clientHeight - on.offsetHeight) / 2;
-    });
-    state.lunchReadyAt = Date.now() + 500;
-    state.lunchHold = false;
-  };
-  place();
-  window.requestAnimationFrame(place);
+function pintarRelojVista() {
+  const hh = document.getElementById("time-picker-hour");
+  const mm = document.getElementById("time-picker-minute");
+  const cur = document.getElementById("time-picker-current");
+  if (hh) hh.textContent = state.lunchHH;
+  if (mm) mm.textContent = state.lunchMM;
+  if (cur) cur.textContent = horaReloj();
 }
 
 function ponerReloj(hora) {
-  const [hh, mm] = (horaMinutos(hora) || "00:00").split(":");
-  state.lunchHold = true;
-  document.querySelectorAll("#lunch-hora .clock-col").forEach((col) => {
-    const v = col.dataset.part === "h" ? hh : mm;
-    const el = col.querySelector(`[data-v="${v}"]`);
-    if (!el) return;
-    col.querySelectorAll(".clock-n.on").forEach((n) => n.classList.remove("on"));
-    el.classList.add("on");
-    col.scrollTop = el.offsetTop - (col.clientHeight - el.offsetHeight) / 2;
-  });
-  state.lunchReadyAt = Date.now() + 500;
-  state.lunchHold = false;
+  const clean = horaMinutos(hora) || "00:00";
+  const [hh, mm] = clean.split(":");
+  state.lunchHH = String(hh || "00").padStart(2, "0");
+  state.lunchMM = String(mm || "00").padStart(2, "0");
+  pintarRelojVista();
+}
+
+function stepReloj(part, dir) {
+  const step = Number(dir) || 0;
+  if (part === "h") {
+    let h = (Number(state.lunchHH) + step + 24) % 24;
+    state.lunchHH = String(h).padStart(2, "0");
+  } else {
+    let m = (Number(state.lunchMM) + step + 60) % 60;
+    state.lunchMM = String(m).padStart(2, "0");
+  }
+  pintarRelojVista();
 }
 
 function pintarOpcion() {
@@ -2045,15 +2058,16 @@ function limitesAlmuerzo(clase) {
     minHora = entrada.hora;
     minAviso = "No puede ser antes de la entrada.";
   }
+  // Inicio puede ser igual o antes que el fin. Solo se rechaza si queda después.
   if (clase === "retorno" && salio && aMinutos(salio.hora) != null && (min == null || aMinutos(salio.hora) > min)) {
     min = aMinutos(salio.hora);
     minHora = salio.hora;
-    minAviso = "El regreso no puede ser antes de la salida.";
+    minAviso = "El fin no puede ser antes del inicio.";
   }
   if (clase === "almuerzo" && entro && aMinutos(entro.hora) != null) {
     max = aMinutos(entro.hora);
     maxHora = entro.hora;
-    maxAviso = "La salida no puede ser después del regreso.";
+    maxAviso = "El inicio no puede ser después del fin.";
   }
   if (salida && aMinutos(salida.hora) != null && (max == null || aMinutos(salida.hora) < max)) {
     max = aMinutos(salida.hora);
@@ -2095,7 +2109,7 @@ function hablarTareo(texto) {
 
 function fraseMarcacion(clase) {
   const nombre = prepareSpeakName(personaAlmuerzo(state.lunchDni));
-  const habla = clase === "retorno" ? "Entrada" : "Salida";
+  const habla = clase === "retorno" ? "Fin" : "Inicio";
   return [habla, nombre].filter(Boolean).join(". ");
 }
 
@@ -2106,60 +2120,151 @@ function avisoAlmuerzo(texto) {
   el.classList.toggle("bad", !!texto);
 }
 
-function programarHora(force) {
-  if (!force && (state.lunchHold || Date.now() < (state.lunchReadyAt || 0))) return;
-  window.clearTimeout(state.lunchTimer);
-  state.lunchTimer = window.setTimeout(() => {
-    const hora = horaReloj();
-    const clase = state.lunchClase === "retorno" ? "retorno" : "almuerzo";
-    const orden = ordenAlmuerzo(clase, hora);
-    if (!orden.ok) {
-      avisoAlmuerzo(orden.aviso);
-      hablarTareo(orden.aviso);
-      const previa = marcaAlmuerzo(state.lunchDni, clase)?.hora || "";
-      const previaMala = !!previa && !ordenAlmuerzo(clase, previa).ok;
-      const volver = previaMala ? orden.hora : (previa || orden.hora);
-      if (volver) ponerReloj(volver);
-      if (previaMala && guardarAlmuerzo(state.lunchDni, clase, volver)) {
-        const small = document.querySelector(`[data-act="lunch-pick"][data-clase="${clase}"] small`);
-        if (small) small.textContent = volver;
-        if (state.view === "home") refreshMesaUi();
-      }
-      return;
-    }
-    avisoAlmuerzo("");
+function aplicarHoraAlmuerzo({ hablar = true } = {}) {
+  const hora = horaReloj();
+  const clase = state.lunchClase === "retorno" ? "retorno" : "almuerzo";
+  const orden = ordenAlmuerzo(clase, hora);
+  if (!orden.ok) {
+    avisoAlmuerzo(orden.aviso);
+    hablarTareo(orden.aviso);
     const previa = marcaAlmuerzo(state.lunchDni, clase)?.hora || "";
-    if (!hora || hora === previa) return;
-    if (!guardarAlmuerzo(state.lunchDni, clase, hora)) return;
-    const small = document.querySelector(`[data-act="lunch-pick"][data-clase="${clase}"] small`);
-    if (small) small.textContent = hora;
-    hablarTareo(fraseMarcacion(clase));
-    if (state.view === "home") refreshMesaUi();
-  }, 160);
+    const previaMala = !!previa && !ordenAlmuerzo(clase, previa).ok;
+    const volver = previaMala ? orden.hora : (previa || orden.hora);
+    if (volver) ponerReloj(volver);
+    return false;
+  }
+  avisoAlmuerzo("");
+  if (!guardarAlmuerzo(state.lunchDni, clase, hora)) return false;
+  const small = document.querySelector(`[data-act="lunch-pick"][data-clase="${clase}"] small`);
+  if (small) small.textContent = hora;
+  if (hablar) hablarTareo(fraseMarcacion(clase));
+  if (state.view === "home") refreshMesaUi();
+  return true;
 }
 
-function marcarReloj(col) {
-  const mid = col.scrollTop + col.clientHeight / 2;
-  let best = null;
-  let bestD = Infinity;
-  col.querySelectorAll(".clock-n").forEach((el) => {
-    const d = Math.abs(el.offsetTop + el.offsetHeight / 2 - mid);
-    if (d < bestD) {
-      bestD = d;
-      best = el;
-    }
+function almuerzoEnviado(dni) {
+  return marcasDe(dni).some((m) => esMarcaAlmuerzo(m) && m.enviado);
+}
+
+function marcarAlmuerzoEnviado(people) {
+  const day = todayKey(TZ);
+  const want = new Set((people || []).map((p) => normalizeDni(p.id || p.dni)).filter(Boolean));
+  if (!want.size) return;
+  let changed = false;
+  const list = store.getJornada().map((m) => {
+    if (m.fecha !== day || !esMarcaAlmuerzo(m) || m.enviado || !want.has(normalizeDni(m.dni))) return m;
+    changed = true;
+    return { ...m, enviado: true };
   });
-  col.querySelectorAll(".clock-n.on").forEach((el) => el.classList.remove("on"));
-  best?.classList.add("on");
-  programarHora();
+  if (changed) store.setJornada(list);
+}
+
+function showMassLunchModal() {
+  const libres = getMesa().filter((p) => !almuerzoEnviado(p.id || p.dni));
+  if (!libres.length) {
+    showAlert("Sin personas", getMesa().length
+      ? "Todos ya tienen su hora enviada. Para cambiarla use el panel."
+      : "Primero escanee a las personas.");
+    return;
+  }
+  state.lunchMasivo = true;
+  state.lunchDni = "";
+  if (state.lunchClase !== "retorno") state.lunchClase = "almuerzo";
+  ponerReloj(state.lunchClase === "retorno" ? state.massFin : state.massIni);
+  const on = (clase) => state.lunchClase === clase ? " lunch-on" : "";
+  openAlert(`<div class="modal-back" data-act="dismiss-alert">
+    <div class="modal summary-modal lunch-modal" role="dialog" aria-modal="true" data-act="stay">
+      <h2>Almuerzo de todos</h2>
+      <p class="lunch-name">${libres.length} ${libres.length === 1 ? "persona" : "personas"}</p>
+      <p class="lunch-dni">Para quienes entraron a la misma hora o cerca</p>
+      <div class="time-picker-modal">
+        <div class="time-picker-head">
+          <div class="time-picker-title">Seleccionar hora</div>
+          <div class="time-picker-current" id="time-picker-current">${esc(horaReloj())}</div>
+        </div>
+        <div class="time-picker-wheel" id="lunch-hora">
+          <div class="time-picker-col">
+            <button type="button" class="time-picker-step" data-act="lunch-step" data-part="h" data-dir="1" aria-label="Subir hora">▲</button>
+            <div class="time-picker-value" id="time-picker-hour">${esc(state.lunchHH)}</div>
+            <button type="button" class="time-picker-step" data-act="lunch-step" data-part="h" data-dir="-1" aria-label="Bajar hora">▼</button>
+          </div>
+          <div class="time-picker-sep">:</div>
+          <div class="time-picker-col">
+            <button type="button" class="time-picker-step" data-act="lunch-step" data-part="m" data-dir="1" aria-label="Subir minuto">▲</button>
+            <div class="time-picker-value" id="time-picker-minute">${esc(state.lunchMM)}</div>
+            <button type="button" class="time-picker-step" data-act="lunch-step" data-part="m" data-dir="-1" aria-label="Bajar minuto">▼</button>
+          </div>
+        </div>
+        <div class="time-picker-actions">
+          <button type="button" class="btn ghost" data-act="lunch-now">Tomar hora exacta</button>
+          <button type="button" class="btn ghost" data-act="lunch-cancel">Cancelar</button>
+          <button type="button" class="btn" data-act="lunch-apply">Tomar hora</button>
+        </div>
+      </div>
+      <p class="lunch-hint" id="lunch-aviso">Nadie queda con almuerzo antes de su entrada. Quien salga distinto, se corrige con su tenedor.</p>
+      <div class="lunch-actions">
+        <button class="btn ghost${on("almuerzo")}" data-act="mass-pick" data-clase="almuerzo" type="button">Inicio almuerzo<small>${esc(state.massIni)}</small></button>
+        <button class="btn ghost${on("retorno")}" data-act="mass-pick" data-clase="retorno" type="button">Fin de almuerzo<small>${esc(state.massFin)}</small></button>
+      </div>
+      <button class="btn lunch-close" data-act="mass-save" type="button">Guardar a todos</button>
+    </div>
+  </div>`);
+}
+
+function tomarHoraMasiva() {
+  const hora = horaReloj();
+  const clase = state.lunchClase === "retorno" ? "retorno" : "almuerzo";
+  const ini = clase === "almuerzo" ? hora : state.massIni;
+  const fin = clase === "retorno" ? hora : state.massFin;
+  if (aMinutos(ini) > aMinutos(fin)) {
+    avisoAlmuerzo(clase === "almuerzo" ? "El inicio no puede ser después del fin." : "El fin no puede ser antes del inicio.");
+    ponerReloj(clase === "almuerzo" ? state.massIni : state.massFin);
+    return false;
+  }
+  if (clase === "almuerzo") state.massIni = hora;
+  else state.massFin = hora;
+  avisoAlmuerzo("");
+  const small = document.querySelector(`[data-act="mass-pick"][data-clase="${clase}"] small`);
+  if (small) small.textContent = hora;
+  return true;
+}
+
+function guardarAlmuerzoMasivo() {
+  const ini = aMinutos(state.massIni);
+  const fin = aMinutos(state.massFin);
+  let hechos = 0;
+  let omitidos = 0;
+  for (const person of getMesa()) {
+    const id = normalizeDni(person.id || person.dni);
+    if (!id || almuerzoEnviado(id)) continue;
+    const marks = marcasDe(id);
+    const entrada = marks.find((m) => m.clase === "entrada");
+    const salida = [...marks].reverse().find((m) => m.clase === "salida");
+    const ent = entrada ? aMinutos(entrada.hora) : null;
+    const sal = salida ? aMinutos(salida.hora) : null;
+    if (ent == null || ent > ini || (sal != null && sal < fin)) {
+      omitidos += 1;
+      continue;
+    }
+    guardarAlmuerzo(id, "almuerzo", state.massIni);
+    guardarAlmuerzo(id, "retorno", state.massFin);
+    hechos += 1;
+  }
+  return { hechos, omitidos };
+}
+
+function cerrarLunchModal() {
+  state.lunchMasivo = false;
+  state.lunchDni = "";
+  state.lunchClase = "";
+  window.clearTimeout(state.lunchTimer);
+  dismissAlert();
+  if (state.view === "home") refreshMesaUi();
+  if (state.view === "supervisor" || state.view === "home") resumeCam();
 }
 
 function horaReloj() {
-  const root = document.getElementById("lunch-hora");
-  if (!root) return "";
-  const h = root.querySelector('.clock-col[data-part="h"] .clock-n.on')?.dataset.v;
-  const m = root.querySelector('.clock-col[data-part="m"] .clock-n.on')?.dataset.v;
-  return h && m ? `${h}:${m}` : "";
+  return `${state.lunchHH || "00"}:${state.lunchMM || "00"}`;
 }
 
 function marcaAlmuerzo(dni, clase) {
@@ -2196,8 +2301,16 @@ function guardarAlmuerzo(dni, clase, horaRaw) {
   return true;
 }
 
+function flechaMarca(salida) {
+  const path = salida
+    ? "M10 4H5.5A1.5 1.5 0 0 0 4 5.5v13A1.5 1.5 0 0 0 5.5 20H10M15 8l4 4-4 4M19 12H9"
+    : "M14 4h4.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H14M10 8l4 4-4 4M14 12H4";
+  return `<svg class="jornada-arrow" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"/></svg>`;
+}
+
 function tieneAlmuerzo(dni) {
-  return marcasDe(dni).some((m) => m.clase === "almuerzo" || m.clase === "retorno");
+  const marks = marcasDe(dni);
+  return marks.some((m) => m.clase === "almuerzo") && marks.some((m) => m.clase === "retorno");
 }
 
 function jornadaHtml(dni) {
@@ -2208,9 +2321,9 @@ function jornadaHtml(dni) {
   const visibles = j.eventos.filter((ev) => ev.clase !== "almuerzo" && ev.clase !== "retorno");
   const lado = (salida) => visibles.filter((ev) => (ev.tipo === "salida") === salida).map((ev) => {
     const label = salida ? "Salida" : "Entrada";
-    return `<span class="jornada-line ${salida ? "out" : "in"}"><i>${label}</i><b>${horaMinutos(ev.hora)}</b></span>`;
+    return `<span class="jornada-line ${salida ? "out" : "in"}"><i>${label}</i>${flechaMarca(salida)}<b>${horaMinutos(ev.hora)}</b></span>`;
   }).join("");
-  const on = tieneAlmuerzo(id) ? " on" : "";
+  const on = tieneAlmuerzo(id) ? " on ok" : "";
   const btn = `<button class="lunch-btn${on}" data-act="lunch-open" data-id="${esc(id)}" type="button" aria-label="Salida y entrada de ${esc(nombreFila(who) || id)}">${forkIcon()}</button>`;
   return `<div class="jornada"><span class="jornada-side">${lado(false)}</span>${btn}<span class="jornada-side right">${lado(true)}</span></div>`;
 }
@@ -2244,26 +2357,62 @@ function showRetiroModal(worker) {
   const dicho = prepareSpeakName(who) || nombre;
   openAlert(`<div class="modal-back" data-act="stay">
     <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
-      <h2>¿Se retira?</h2>
+      <h2>¿Marcar salida?</h2>
       <p class="lunch-name">${esc(nombre)}</p>
-      <p class="lunch-dni">DNI ${esc(id)}</p>
-      <p class="lunch-hint">Puede ser a cualquier hora, por permiso o porque se siente mal.</p>
+      <p class="lunch-dni">DNI ${esc(id)} · Entrada ${esc(horaEntrada(id) || "—")}</p>
+      <p class="lunch-hint">Ya hay una entrada. Este segundo escaneo puede cerrar el tareo sin almuerzo.</p>
       <div class="retiro-actions">
-        <button class="btn" data-act="retiro-si" data-id="${esc(id)}" type="button">Sí, se retira</button>
-        <button class="btn ghost" data-act="retiro-no" type="button">No, solo aviso</button>
+        <button class="btn" data-act="retiro-si" data-id="${esc(id)}" type="button">Sí, salir sin almuerzo</button>
+        <button class="btn ghost" data-act="retiro-no" type="button">Cancelar</button>
       </div>
     </div>
   </div>`);
-  speak(`Se retira? ${dicho}`, { flush: true });
+  speak(`Marcar salida sin almuerzo? ${dicho}`, { flush: true });
+}
+
+function horaEntrada(dni) {
+  const mark = marcasDe(dni).find((m) => m.clase === "entrada" || m.tipo === "entrada");
+  return mark?.hora || "";
 }
 
 function cerrarAvisoRetiro() {
   state.retiroDni = "";
   state.retiroStamp = null;
   dismissAlert();
-  showScanToast("Solo un aviso. Sigue dentro.", 1800);
-  speak("Solo un aviso. Sigue dentro.", { flush: true });
+  showScanToast("Sigue en la lista de tareo.", 1800);
+  speak("Cancelado. Sigue en la lista.", { flush: true });
   if (state.view === "supervisor" || state.view === "home") resumeCam();
+}
+
+function choqueAlmuerzo(dni, hora) {
+  const ahora = aMinutos(hora);
+  if (ahora == null) return "";
+  let max = null;
+  let maxHora = "";
+  for (const mark of marcasDe(dni)) {
+    if (!esMarcaAlmuerzo(mark)) continue;
+    const m = aMinutos(mark.hora);
+    if (m != null && (max == null || m > max)) {
+      max = m;
+      maxHora = horaMinutos(mark.hora);
+    }
+  }
+  return max != null && ahora < max ? maxHora : "";
+}
+
+function avisoChoqueAlmuerzo(worker, hora) {
+  const nombre = prepareSpeakName(worker) || twoApellidos(worker) || "";
+  const ahora = horaMinutos(nowParts(TZ).hora);
+  showScanHit({
+    dni: worker?.dni || worker?.id || "—",
+    nombre,
+    cargo: [nameParts(worker).nombre, worker?.cargo].filter(Boolean).join(" · "),
+    ok: false,
+    stateLabel: "Revise la hora",
+    note: `Salida ${ahora} es antes del fin de almuerzo ${hora}. Corrija con el tenedor.`,
+  });
+  showScanToast(`Salida antes de ${hora}. Corrija el almuerzo.`, 2400);
+  speak("La salida no puede ser antes del fin. Corrija la hora.", { flush: true });
 }
 
 function registrarMarcacion(worker, stamp) {
@@ -2274,6 +2423,10 @@ function registrarMarcacion(worker, stamp) {
   const previas = marcasDe(dni);
   const t = stamp || nowParts(TZ);
   const clase = siguienteClase(previas, t.hora);
+  if (clase === "salida") {
+    const choque = choqueAlmuerzo(dni, t.hora);
+    if (choque) return { ok: false, choque };
+  }
   const info = CLASE_MARCA[clase];
   const parts = nameParts(worker);
   store.addMarcacion({
@@ -2315,7 +2468,7 @@ function confirmarMarcacion(worker, mark) {
   showScanToast(`${mark.label}. ${nombre}`.trim(), CONFIRMA_MS);
   state.confirmUntil = Date.now() + CONFIRMA_MS;
   try { navigator.vibrate?.(mark.clase === "salida" || mark.clase === "almuerzo" ? [40, 30, 40] : 50); } catch { /* sin vibración */ }
-  const frase = [mark.habla, nombre].filter(Boolean).join(". ");
+  const frase = mark.clase === "salida" ? "Salida" : [mark.habla, nombre].filter(Boolean).join(". ");
   const dni = normalizeDni(worker.dni || worker.id);
   state.speechLockDni = dni;
   state.speechLockUntil = Date.now() + 8000;
@@ -2477,54 +2630,6 @@ function refreshPendPill() {
   }
   pill.className = "pill pend";
   pill.innerHTML = `<i class="up"></i>${n} pend.`;
-}
-
-function supervisorAsMealPerson(person) {
-  const dni = normalizeDni(person?.dni || person?.id);
-  if (!dni) return null;
-  const parsed = nameParts(person);
-  const apellido = parsed.apellido || twoApellidos(person) || "";
-  const nombre = parsed.nombre || "";
-  return {
-    dni,
-    id: dni,
-    apellido,
-    nombre,
-    nombreCompleto: parsed.nombreCompleto || [apellido, nombre].filter(Boolean).join(" "),
-    cargo: person.cargo || (person.emergencia ? "Supervisor de emergencia" : "Supervisor"),
-    temporal: !!person.emergencia,
-    ...(personSexo(person) ? { sexo: personSexo(person) } : {}),
-  };
-}
-
-function offerSupervisorOwnLunch(person) {
-  // Solo en almuerzo normal al iniciar. Nunca en Extra ni si ya envió hoy.
-  if (state.extraOn || hasSavedSend() || isSendLocked()) return;
-  const worker = supervisorAsMealPerson(person);
-  if (!worker) return;
-  registerPerson(worker, { silent: true });
-  if (state.extraOn || hasSavedSend() || isSendLocked()) {
-    store.clearMesa();
-    return;
-  }
-  refreshMesaUi();
-  showSupervisorLunchModal(worker);
-}
-
-function showSupervisorLunchModal(worker) {
-  const label = displayName(worker) || worker.dni;
-  scanner.pause();
-  openAlert(`<div class="modal-back" data-act="stay">
-    <div class="modal summary-modal" role="dialog" aria-modal="true" data-act="stay">
-      ${sectionHead("Jefe en la lista", "Ya quedó cargado para no escanearlo dos veces. Si desea, puede quitarlo.")}
-      <p class="extra-note">DNI ${esc(worker.dni)} · ${esc(label)}</p>
-      <div class="footer-actions" style="margin-top:8px">
-        <button class="btn ghost" data-act="drop-sup-lunch" data-id="${esc(worker.dni)}" type="button">Eliminar</button>
-        <button class="btn leaf" data-act="keep-sup-lunch" type="button">Dejarlo</button>
-      </div>
-    </div>
-  </div>`);
-  speak("El jefe quedó en la lista. Puede dejarlo o quitarlo.", { flush: true });
 }
 
 function scanHelp() {
@@ -2772,9 +2877,12 @@ function mesaForList(mesa) {
 
 function mesaFindBox() {
   const q = mesaFindDigits();
-  return `<label class="mesa-find">
-    <input id="mesa-q" class="dni-search" type="search" inputmode="numeric" maxlength="8" enterkeyhint="search" autocomplete="off" placeholder="Buscar DNI" value="${esc(q)}" aria-label="Buscar por DNI">
-  </label>`;
+  return `<div class="mesa-find-row">
+    <label class="mesa-find">
+      <input id="mesa-q" class="dni-search" type="search" inputmode="numeric" maxlength="8" enterkeyhint="search" autocomplete="off" placeholder="Buscar DNI" value="${esc(q)}" aria-label="Buscar por DNI">
+    </label>
+    <button class="lunch-btn lunch-mass" data-act="mass-open" type="button" aria-label="Almuerzo de todos">${forkIcon()}</button>
+  </div>`;
 }
 
 function menuQty(person) {
@@ -2791,10 +2899,14 @@ function nombreFila(person) {
   return [ape, nom].filter(Boolean).join(" ") || person?.dni || person?.id || "";
 }
 
-function genteHoy() {
-  const map = new Map();
+function dniActivosHoy() {
+  const keep = new Set();
   const day = todayKey(TZ);
   const sid = normalizeDni(supervisor()?.dni || supervisor()?.id || "");
+  for (const person of getMesa()) {
+    const id = normalizeDni(person.id || person.dni);
+    if (id) keep.add(id);
+  }
   for (const row of store.getCola().concat(store.getHistorial())) {
     if (!row || (row.type !== "lista" && row.type !== "extra")) continue;
     if (row.confirmed === false) continue;
@@ -2802,27 +2914,26 @@ function genteHoy() {
     if (payload.fecha_local !== day) continue;
     const rowSid = normalizeDni(payload.supervisor_id || "");
     if (sid && rowSid && rowSid !== sid) continue;
-    const at = row.savedAt || row.createdAt || 0;
     for (const person of payload.personas || []) {
       const id = normalizeDni(person?.dni || person?.id);
-      if (!id) continue;
-      const prev = map.get(id);
-      if (prev && (prev.escaneadoAt || 0) >= at) continue;
-      map.set(id, {
-        id,
-        dni: id,
-        apellido: person.apellido || "",
-        nombre: person.nombre || "",
-        cargo: person.area || person.cargo || "",
-        fecha: payload.fecha_local || day,
-        hora: horaMinutos(payload.hora_local),
-        status: "enviado",
-        enMesa: false,
-        escaneadoAt: at,
-        menus: menuQty(person),
-      });
+      if (id) keep.add(id);
     }
   }
+  return keep;
+}
+
+function limpiarMarcasSueltas() {
+  const day = todayKey(TZ);
+  const keep = dniActivosHoy();
+  const all = store.getJornada();
+  const next = all.filter((m) => m.fecha !== day || keep.has(normalizeDni(m.dni)));
+  if (next.length !== all.length) store.setJornada(next);
+}
+
+function genteHoy() {
+  limpiarMarcasSueltas();
+  const map = new Map();
+  const day = todayKey(TZ);
   for (const person of getMesa()) {
     const id = normalizeDni(person.id || person.dni);
     if (!id) continue;
@@ -2836,23 +2947,6 @@ function genteHoy() {
       hora: horaMinutos(person.hora) || prev?.hora || "",
       escaneadoAt: person.escaneadoAt || prev?.escaneadoAt || 0,
       enMesa: true,
-    });
-  }
-  for (const mark of store.getJornada()) {
-    if (mark.fecha !== day) continue;
-    const id = normalizeDni(mark.dni);
-    if (!id || map.has(id)) continue;
-    map.set(id, {
-      id,
-      dni: id,
-      apellido: mark.apellido || "",
-      nombre: mark.nombre || "",
-      cargo: mark.cargo || "",
-      fecha: mark.fecha,
-      hora: horaMinutos(mark.hora),
-      status: "lista",
-      enMesa: false,
-      escaneadoAt: mark.at || 0,
     });
   }
   return [...map.values()].sort((a, b) => (b.escaneadoAt || 0) - (a.escaneadoAt || 0));
@@ -2869,22 +2963,13 @@ function mesaRows(mesa) {
   const { rows } = pageSlice(shown);
   return rows.map((p) => {
     const cargo = String(p.cargo || p.area || "").trim();
-    const j = jornadaDe(p.dni || p.id);
-    let st = !p.enMesa || p.status === "enviado" ? "Enviado" : p.status === "pendiente" ? "Guardado" : "En lista";
-    let kind = st === "Enviado" ? "ok" : p.status === "pendiente" ? "wait" : "now";
-    if (j.eventos.length) {
-      st = j.dentroEstado ? "Dentro" : "Fuera";
-      kind = j.dentroEstado ? "now" : "ok";
-    }
     return `<div class="person-row">
       <div class="person-top">
-        ${avatarHtml(p)}
         <div>
           <b class="person-full">${esc(nombreFila(p))}</b>
           <div class="meta">DNI ${esc(p.id)}${cargo ? ` · ${esc(cargo)}` : ""}${p.temporal ? " · Temporal" : ""}</div>
           <div class="meta">Fecha ${esc(histFecha(p.fecha))}</div>
         </div>
-        <span class="st ${kind}">${st}</span>
         ${p.enMesa ? `<button class="row-del" data-act="ask-drop-mesa" data-id="${esc(p.id)}" data-name="${esc(displayName(p))}" type="button" aria-label="Quitar ${esc(displayName(p) || p.id)}"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.2 5.1 5.1 6.2 10.9 12l-5.8 5.8 1.1 1.1L12 13.1l5.8 5.8 1.1-1.1L13.1 12l5.8-5.8-1.1-1.1L12 10.9 6.2 5.1z"/></svg></button>` : ""}
       </div>
       ${jornadaHtml(p.dni || p.id)}
@@ -2998,12 +3083,8 @@ function enterSession(person, { enviado = false, fecha, comida } = {}) {
   dismissAlert();
   store.clearMesa();
   show("home");
-  if (person.emergencia) {
-    speak("Jornada normal. Escanee a cada persona.", { flush: true });
-    setScanLive("Jornada normal. Acerca el QR.", true);
-    return;
-  }
-  offerSupervisorOwnLunch(person);
+  speak("Jornada normal. Escanee a cada persona.", { flush: true });
+  setScanLive("Jornada normal. Acerca el QR.", true);
 }
 
 function showLoginGate(person) {
@@ -3131,13 +3212,17 @@ function releaseMesaAfterSend(records) {
     }
   }
   if (!sent.size) return;
+  // Enviar no borra la lista: cada trabajador conserva su estado en pantalla.
   for (const id of sent) unlockWorkerScan(id);
-  const keep = getMesa().filter((person) => !sent.has(normalizeDni(person.id)));
-  if (keep.length !== getMesa().length) setMesa(keep);
+  const mesa = getMesa().map((person) => {
+    const id = normalizeDni(person.id || person.dni);
+    if (!id || !sent.has(id)) return person;
+    return { ...person, status: "enviado" };
+  });
+  setMesa(mesa);
   hideScanHit();
   hideScanToast();
-  setScanLive(isSendLocked() ? "Ya envió. Pulse Extra si alguien se olvidó o llegó tarde." : "Listo para el siguiente QR.", true);
-  state.mesaPage = 1;
+  setScanLive("Tareo enviado. La lista sigue en pantalla.", true);
   if (state.view === "home") refreshMesaUi();
 }
 
@@ -3656,14 +3741,15 @@ function completeWorkerScan(worker, dni, opId) {
   const id = normalizeDni(worker.dni || worker.id || dni);
   asegurarEntradaPrevia(worker);
   if (marcaDemasiadoPronto(id)) return true;
-  if (siguienteClase(marcasDe(id)) === "salida") {
+  if (siguienteClase(marcasDe(id)) === "salida" && !tieneAlmuerzo(id)) {
     showRetiroModal(worker);
     return true;
   }
   const mark = registrarMarcacion(worker);
   if (opId !== state.scanOpId) return false;
   if (!mark.ok) {
-    if (mark.otra) speak("Escanee a la persona indicada.");
+    if (mark.choque) avisoChoqueAlmuerzo(worker, mark.choque);
+    else if (mark.otra) speak("Escanee a la persona indicada.");
     return true;
   }
   try { confirmarMarcacion(worker, mark); } catch { /* tarjeta de UI opcional */ }
@@ -3917,6 +4003,7 @@ function sendLista() {
     createdAt: extra ? Date.now() : (existing?.createdAt || Date.now()),
   };
   store.upsertCola(record);
+  marcarAlmuerzoEnviado(people);
   setMesa(mesa.map((p) => ({ ...p, status: "lista" })));
   for (const p of mesa) rememberDni(p);
   if (extra) {
@@ -4079,7 +4166,7 @@ async function onClick(e) {
     e.stopPropagation();
     return;
   }
-  const once = ["send-lista", "reload-app", "clear-cache", "logout", "drop-mesa", "save-temp-person", "save-emergency-name", "keep-sup-lunch", "drop-sup-lunch", "add-emergency-sup", "confirm-emergency", "enter", "open-dni-login", "submit-dni-login"];
+  const once = ["send-lista", "reload-app", "clear-cache", "logout", "drop-mesa", "save-temp-person", "save-emergency-name", "add-emergency-sup", "confirm-emergency", "enter", "open-dni-login", "submit-dni-login", "lunch-save", "mass-save"];
   if (once.includes(act)) {
     if (tapLock) return;
     tapLock = true;
@@ -4101,17 +4188,58 @@ async function onClick(e) {
     return;
   }
   if (act === "lunch-open") {
+    if (almuerzoEnviado(btn.dataset.id)) {
+      showAlert("Ya enviado", "Esta hora ya se envió. Para cambiarla use el panel.");
+      return;
+    }
     state.lunchClase = "";
     showLunchModal(btn.dataset.id);
     return;
   }
-  if (act === "lunch-tick") {
-    const col = btn.closest(".clock-col");
-    if (!col) return;
-    col.scrollTo({ top: btn.offsetTop - (col.clientHeight - btn.offsetHeight) / 2, behavior: "auto" });
-    col.querySelectorAll(".clock-n.on").forEach((el) => el.classList.remove("on"));
-    btn.classList.add("on");
-    programarHora(true);
+  if (act === "mass-open") {
+    state.lunchClase = "almuerzo";
+    showMassLunchModal();
+    return;
+  }
+  if (act === "mass-pick") {
+    state.lunchClase = btn.dataset.clase === "retorno" ? "retorno" : "almuerzo";
+    document.querySelectorAll("[data-act='mass-pick']").forEach((el) => {
+      el.classList.toggle("lunch-on", el.dataset.clase === state.lunchClase);
+    });
+    avisoAlmuerzo("");
+    ponerReloj(state.lunchClase === "retorno" ? state.massFin : state.massIni);
+    return;
+  }
+  if (act === "mass-save") {
+    if (!tomarHoraMasiva()) return;
+    const { hechos, omitidos } = guardarAlmuerzoMasivo();
+    cerrarLunchModal();
+    const resto = omitidos ? ` ${omitidos} sin cambio por su hora de entrada o salida.` : "";
+    setScanLive(`Listo. ${hechos} ${hechos === 1 ? "persona" : "personas"}.${resto}`, true);
+    speak(`Listo. ${hechos} ${hechos === 1 ? "persona" : "personas"}.`, { flush: true });
+    return;
+  }
+  if (act === "lunch-step") {
+    stepReloj(btn.dataset.part, btn.dataset.dir);
+    return;
+  }
+  if (act === "lunch-now") {
+    const t = nowParts(TZ);
+    ponerReloj(t.hora);
+    return;
+  }
+  if (act === "lunch-apply") {
+    if (state.lunchMasivo) tomarHoraMasiva();
+    else aplicarHoraAlmuerzo();
+    return;
+  }
+  if (act === "lunch-save") {
+    if (!aplicarHoraAlmuerzo()) return;
+    cerrarLunchModal();
+    return;
+  }
+  if (act === "lunch-cancel") {
+    cerrarLunchModal();
     return;
   }
   if (act === "lunch-pick") {
@@ -4134,6 +4262,7 @@ async function onClick(e) {
     if (worker) {
       const mark = registrarMarcacion(worker, stamp);
       if (mark.ok) confirmarMarcacion(worker, mark);
+      else if (mark.choque) avisoChoqueAlmuerzo(worker, mark.choque);
     }
     if (state.view === "home") refreshMesaUi();
     if (state.view === "supervisor" || state.view === "home") resumeCam();
@@ -4144,12 +4273,12 @@ async function onClick(e) {
     return;
   }
   if (act === "dismiss-alert") {
-    const eraRetiro = !!state.retiroDni;
-    state.lunchDni = "";
-    state.lunchClase = "";
-    window.clearTimeout(state.lunchTimer);
-    if (eraRetiro) {
+    if (state.retiroDni) {
       cerrarAvisoRetiro();
+      return;
+    }
+    if (state.lunchDni || state.lunchMasivo) {
+      cerrarLunchModal();
       return;
     }
     dismissAlert();
@@ -4376,36 +4505,6 @@ async function onClick(e) {
       speak("Escriba su nombre completo.");
       showEmergencyNameModal(dni, nombre);
     }
-    return;
-  }
-  if (act === "keep-sup-lunch") {
-    dismissAlert();
-    refreshMesaUi();
-    setScanLive("Supervisor en lista. Escanee al siguiente.", true);
-    window.setTimeout(() => {
-      speak("El jefe quedó en la lista.", { flush: true });
-      resumeCam();
-      refreshHomeLock();
-    }, 40);
-    return;
-  }
-  if (act === "drop-sup-lunch") {
-    const id = normalizeDni(btn.dataset.id || "");
-    const who = getMesa().find((p) => normalizeDni(p.id) === id);
-    const nombre = prepareSpeakName(who) || displayName(who) || "el supervisor";
-    if (id) removeMesaPerson(id);
-    dismissAlert();
-    if (id) {
-      scanner.forget(id);
-      markProcessedQR(id);
-    }
-    refreshMesaUi();
-    setScanLive(`${nombre}. Quitado. Acerca el siguiente QR.`, true);
-    window.setTimeout(() => {
-      speak(nombre ? `${nombre}, quitado.` : "Quitado de la lista.", { flush: true });
-      resumeCam();
-      refreshHomeLock();
-    }, 80);
     return;
   }
   if (act === "add-temp-person") {

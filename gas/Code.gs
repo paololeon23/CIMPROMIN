@@ -10,7 +10,7 @@
  * Ejecutar setupSheets una vez después de pegar.
  */
 
-var APP_VERSION = "1.5.2";
+var APP_VERSION = "1.5.4";
 var TZ = "America/Lima";
 var CACHE_TTL_SEC = 21600;
 var INGRESO_MIN = 8 * 60;
@@ -55,8 +55,135 @@ function doPost(e) {
   try { body = raw ? JSON.parse(raw) : {}; } catch (err) {
     return jsonOut({ ok: false, error: "json_invalido" });
   }
+  // Panel oficina: { accion: crear|editar|eliminar, fecha, dni, ... }
+  if (body && body.accion) return officeSave(body);
+  // App celular: { clientId, type, payload:{ personas, marcas } }
   if (!body || !body.payload) return jsonOut({ ok: false, error: "peticion_desconocida" });
   return workerSave(body);
+}
+
+function officeSave(body) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) return jsonOut({ ok: false, error: "lock_timeout" });
+  try {
+    var accion = String(body.accion || "").toLowerCase();
+    var fecha = fechaTrabajo(body.fecha);
+    var dni = onlyDni(body.dni);
+    if (!/^\d{8}$/.test(dni)) return jsonOut({ ok: false, error: "dni_invalido" });
+    if (accion === "eliminar") {
+      removePersonDay(fecha, dni);
+      return jsonOut({ ok: true, tareo: dayRows(fecha) });
+    }
+    if (accion !== "crear" && accion !== "editar") {
+      return jsonOut({ ok: false, error: "accion_desconocida" });
+    }
+    var dniNuevo = onlyDni(body.dni_nuevo || "");
+    if (accion === "editar" && /^\d{8}$/.test(dniNuevo) && dniNuevo !== dni) {
+      removePersonDay(fecha, dni);
+      dni = dniNuevo;
+    }
+    upsertOfficeRow(fecha, dni, body);
+    return jsonOut({ ok: true, tareo: dayRows(fecha) });
+  } catch (err) {
+    return jsonOut({ ok: false, error: String(err && err.message ? err.message : err) });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function officeLine(fecha, dni, body) {
+  var nombre = String(body.trabajador || "").replace(/\s+/g, " ").trim().toUpperCase();
+  var ingreso = asHora(body.ingreso);
+  var salida = asHora(body.salida);
+  var almIn = asHora(body.almuerzo_inicio);
+  var almOut = asHora(body.almuerzo_fin);
+  var efectivas = String(body.horas_efectivas || "").trim();
+  var extra = String(body.horas_extra || "").trim();
+  var tardanza = String(body.tardanza || "").trim();
+  if (!efectivas && ingreso && salida) {
+    var calc = calcJornada([
+      { hora: ingreso, clase: "entrada", tipo: "entrada" },
+      almIn ? { hora: almIn, clase: "almuerzo" } : null,
+      almOut ? { hora: almOut, clase: "retorno" } : null,
+      { hora: salida, clase: "salida" }
+    ].filter(Boolean));
+    efectivas = calc.efectivas;
+    if (!extra) extra = calc.extra;
+    if (!tardanza) tardanza = calc.tardanza;
+    if (!almIn) almIn = calc.almuerzoInicio;
+    if (!almOut) almOut = calc.almuerzoFin;
+  }
+  return [
+    textCell(fecha),
+    textCell(dni),
+    textCell(nombre),
+    textCell(ingreso),
+    textCell(salida),
+    textCell(almIn),
+    textCell(almOut),
+    efectivas,
+    extra,
+    tardanza
+  ];
+}
+
+function upsertOfficeRow(fecha, dni, body) {
+  var sh = sheet();
+  var width = COLS.length;
+  var row = findPersonDayRow(fecha, dni);
+  var line = officeLine(fecha, dni, body);
+  if (row) {
+    sh.getRange(row, 1, 1, width).setValues([line]);
+    return;
+  }
+  var start = sh.getLastRow() + 1;
+  sh.getRange(start, 1, 1, 1).setNumberFormat("@");
+  sh.getRange(start, 2, 1, 1).setNumberFormat("@");
+  sh.getRange(start, 1, 1, width).setValues([line]);
+}
+
+function findPersonDayRow(fecha, dni) {
+  var sh = sheet();
+  var last = sh.getLastRow();
+  if (last < 2) return 0;
+  var values = sh.getRange(2, 1, last - 1, 2).getValues();
+  var i;
+  for (i = 0; i < values.length; i++) {
+    if (normFecha(values[i][0]) === fecha && onlyDni(values[i][1]) === dni) return i + 2;
+  }
+  return 0;
+}
+
+function removePersonDay(fecha, dni) {
+  var row = findPersonDayRow(fecha, dni);
+  if (row) sheet().deleteRow(row);
+}
+
+function dayRows(fecha) {
+  var sh = sheet();
+  var last = sh.getLastRow();
+  var out = [];
+  if (last < 2) return out;
+  var values = sh.getRange(2, 1, last - 1, COLS.length).getValues();
+  var i;
+  for (i = 0; i < values.length; i++) {
+    var day = normFecha(values[i][0]);
+    var id = onlyDni(values[i][1]);
+    if (day !== fecha || !/^\d{8}$/.test(id)) continue;
+    out.push({
+      fecha: day,
+      dni: id,
+      trabajador: String(values[i][2] || ""),
+      ingreso: asHora(values[i][3]),
+      salida: asHora(values[i][4]),
+      almuerzo_inicio: asHora(values[i][5]),
+      almuerzo_fin: asHora(values[i][6]),
+      horas_efectivas: String(values[i][7] || ""),
+      horas_extra: String(values[i][8] || ""),
+      tardanza: String(values[i][9] || "")
+    });
+  }
+  return out;
 }
 
 function workerSave(body) {
@@ -131,7 +258,7 @@ function writePeople(fecha, people) {
   }
 
   var append = [];
-  var n = 0;
+    var n = 0;
   for (var dni in people) {
     var line = buildRow(fecha, people[dni]);
     var row = at[fecha + "|" + dni];
@@ -141,6 +268,7 @@ function writePeople(fecha, people) {
   }
   if (append.length) {
     var start = sh.getLastRow() + 1;
+    sh.getRange(start, 1, append.length, 1).setNumberFormat("@");
     sh.getRange(start, 2, append.length, 1).setNumberFormat("@");
     sh.getRange(start, 1, append.length, width).setValues(append);
   }
@@ -279,6 +407,8 @@ function sheet() {
     for (i = 0; i < COLS.length; i++) labels.push(COLS[i].label);
     sh.getRange(1, 1, 1, COLS.length).setValues([labels]);
     if (sh.getLastColumn() > COLS.length) sh.deleteColumns(COLS.length + 1, sh.getLastColumn() - COLS.length);
+    // Fecha y DNI como texto para que el GET no corra el día por zona horaria.
+    sh.getRange(1, 1, Math.max(sh.getMaxRows(), 1), 1).setNumberFormat("@");
     sh.getRange(1, 2, Math.max(sh.getMaxRows(), 1), 1).setNumberFormat("@");
   }
   return sh;
@@ -303,6 +433,7 @@ function setupSheets() {
   sh.setRowHeight(1, 36);
   sh.setTabColor(HEAD);
   for (i = 0; i < COLS.length; i++) sh.setColumnWidth(i + 1, COLS[i].width);
+  sh.getRange(1, 1, Math.max(sh.getMaxRows(), 1), 1).setNumberFormat("@");
   sh.getRange(1, 2, Math.max(sh.getMaxRows(), 1), 1).setNumberFormat("@");
   if (sh.getLastColumn() > width) sh.deleteColumns(width + 1, sh.getLastColumn() - width);
   var drop = ["Supervisores", "Trabajadores", "Comidas extras"];
@@ -357,10 +488,19 @@ function limaFecha() {
 
 function normFecha(v) {
   if (Object.prototype.toString.call(v) === "[object Date]" && !isNaN(v.getTime())) {
-    return Utilities.formatDate(v, TZ, "yyyy-MM-dd");
+    var tz = TZ;
+    try {
+      tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || TZ;
+    } catch (err) { /* sigue con Lima */ }
+    return Utilities.formatDate(v, tz, "yyyy-MM-dd");
   }
   var m = String(v || "").match(/(\d{4}-\d{2}-\d{2})/);
-  return m ? m[1] : "";
+  if (m) return m[1];
+  m = String(v || "").match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (m) {
+    return m[3] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[1]).slice(-2);
+  }
+  return "";
 }
 
 function asHora(v) {
