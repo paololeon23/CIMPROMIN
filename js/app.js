@@ -2078,15 +2078,19 @@ function limitesAlmuerzo(clase) {
 }
 
 function ordenAlmuerzo(clase, hora) {
-  const nueva = aMinutos(hora);
+  const limpia = horaMinutos(hora);
+  // 00:00 = sin pausa de almuerzo (salida anticipada).
+  if (limpia === "00:00") return { ok: true, hora: "00:00", aviso: "" };
+  const nueva = aMinutos(limpia);
   if (nueva == null) return { ok: false, hora: "", aviso: "" };
   const lim = limitesAlmuerzo(clase);
   if (lim.min != null && nueva < lim.min) return { ok: false, hora: lim.minHora, aviso: lim.minAviso };
   if (lim.max != null && nueva > lim.max) return { ok: false, hora: lim.maxHora, aviso: lim.maxAviso };
-  return { ok: true, hora, aviso: "" };
+  return { ok: true, hora: limpia, aviso: "" };
 }
 
 function avisoGuardado() {
+  if (esSinAlmuerzo(state.lunchDni)) return "";
   const salio = marcaAlmuerzo(state.lunchDni, "almuerzo");
   const entro = marcaAlmuerzo(state.lunchDni, "retorno");
   if (salio) {
@@ -2311,6 +2315,21 @@ function flechaMarca(salida) {
 function tieneAlmuerzo(dni) {
   const marks = marcasDe(dni);
   return marks.some((m) => m.clase === "almuerzo") && marks.some((m) => m.clase === "retorno");
+}
+
+/** Salida anticipada / sin pausa: almuerzo 00:00–00:00 y tenedor verde. */
+function marcarSinAlmuerzo(dni) {
+  const id = normalizeDni(dni);
+  if (!id) return false;
+  guardarAlmuerzo(id, "almuerzo", "00:00");
+  guardarAlmuerzo(id, "retorno", "00:00");
+  return true;
+}
+
+function esSinAlmuerzo(dni) {
+  const salio = marcaAlmuerzo(dni, "almuerzo");
+  const entro = marcaAlmuerzo(dni, "retorno");
+  return horaMinutos(salio?.hora) === "00:00" && horaMinutos(entro?.hora) === "00:00";
 }
 
 function jornadaHtml(dni) {
@@ -4260,6 +4279,8 @@ async function onClick(e) {
     dismissAlert();
     const worker = findWorkerByDni(id) || personFromSaved(id);
     if (worker) {
+      // Sin almuerzo: registra 00:00 / 00:00 y pinta el tenedor verde.
+      marcarSinAlmuerzo(id);
       const mark = registrarMarcacion(worker, stamp);
       if (mark.ok) confirmarMarcacion(worker, mark);
       else if (mark.choque) avisoChoqueAlmuerzo(worker, mark.choque);

@@ -10,7 +10,7 @@
  * Ejecutar setupSheets una vez después de pegar.
  */
 
-var APP_VERSION = "1.5.4";
+var APP_VERSION = "1.5.5";
 var TZ = "America/Lima";
 var CACHE_TTL_SEC = 21600;
 var INGRESO_MIN = 8 * 60;
@@ -320,7 +320,12 @@ function calcJornada(marks) {
   var desde = ALMUERZO_DESDE;
   var hasta = ALMUERZO_HASTA;
   var pausa = 0;
-  if (alm != null && fin != null && fin >= alm) {
+  // Marcas 00:00 / 00:00 = salió sin almuerzo (no usar 12:00-13:00).
+  if (alm != null && fin != null && alm === 0 && fin === 0) {
+    desde = 0;
+    hasta = 0;
+    pausa = 0;
+  } else if (alm != null && fin != null && fin >= alm) {
     desde = alm;
     hasta = fin;
     pausa = fin - alm;
