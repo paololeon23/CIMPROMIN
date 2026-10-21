@@ -10,7 +10,7 @@
  * Ejecutar setupSheets una vez después de pegar.
  */
 
-var APP_VERSION = "1.5.5";
+var APP_VERSION = "1.5.6";
 var TZ = "America/Lima";
 var CACHE_TTL_SEC = 21600;
 var INGRESO_MIN = 8 * 60;
@@ -308,14 +308,26 @@ function calcJornada(marks) {
     var tipo = String(list[i].tipo || "");
     var m = mins(list[i].hora);
     if (m == null) continue;
-    if (ingreso == null && (clase === "entrada" || tipo === "entrada")) ingreso = m;
-    if (clase === "salida") salida = m;
+    // Almuerzo/retorno no son ingreso ni salida (antes el retorno 00:00 pisaba la entrada).
     if (clase === "almuerzo") {
       if (alm == null || m < alm) alm = m;
+      continue;
     }
-    if (clase === "retorno" && alm != null && fin == null) fin = m;
+    if (clase === "retorno") {
+      if (fin == null) fin = m;
+      continue;
+    }
+    if (ingreso == null && (clase === "entrada" || tipo === "entrada")) ingreso = m;
+    if (clase === "salida" || tipo === "salida") salida = m;
   }
-  if (ingreso == null && list.length) ingreso = mins(list[0].hora);
+  if (ingreso == null) {
+    for (i = 0; i < list.length; i++) {
+      var c0 = String(list[i].clase || "");
+      if (c0 === "almuerzo" || c0 === "retorno") continue;
+      var m0 = mins(list[i].hora);
+      if (m0 != null) { ingreso = m0; break; }
+    }
+  }
 
   var desde = ALMUERZO_DESDE;
   var hasta = ALMUERZO_HASTA;

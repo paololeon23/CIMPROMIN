@@ -1,4 +1,4 @@
-const CACHE_NAME = "cocina-qb-v340";
+const CACHE_NAME = "cocina-qb-v341";
 
 const SHELL = [
   "./",
@@ -281,7 +281,7 @@ async function flushClosedApp() {
             clientId: record.clientId,
             rev: record.rev || record.createdAt || Date.now(),
             payload: record.payload || {},
-            clientVersion: "1.4.0",
+            clientVersion: "1.4.1",
           }),
           cache: "no-store",
           signal: ctrl.signal,

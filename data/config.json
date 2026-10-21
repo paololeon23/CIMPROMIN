@@ -1,7 +1,7 @@
 {
   "appName": "Cocina QBerries",
   "shortName": "Cocina QB",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "timezone": "America/Lima",
   "historyTtlHours": 48,
   "appsScriptUrl": "https://script.google.com/macros/s/AKfycbzpxyGDjnqPnM4UDJnikM9GQ2tSjPrXa60BU_MHK33l2RdcxvgJdF9-AVRzF3D17Z6O2A/exec",

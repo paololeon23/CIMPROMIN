@@ -1817,7 +1817,27 @@ function siguienteClase(previas, hora) {
   if (!last) return "entrada";
   const clase = claseMarcacion(last, scans.length - 1);
   if (clase === "entrada") return "salida";
-  return "entrada";
+  // Ya marcó salida hoy: no hay otra entrada el mismo día.
+  return "cerrado";
+}
+
+function yaMarcoSalidaHoy(dni) {
+  return marcasDe(dni).some((m) => !esMarcaAlmuerzo(m) && (m.clase === "salida" || m.tipo === "salida"));
+}
+
+function avisoSalidaCerrada(worker) {
+  const nombre = prepareSpeakName(worker) || twoApellidos(worker) || "";
+  const dni = normalizeDni(worker?.dni || worker?.id) || "—";
+  showScanHit({
+    dni,
+    nombre,
+    cargo: [nameParts(worker).nombre, worker?.cargo].filter(Boolean).join(" · "),
+    ok: false,
+    stateLabel: "Ya marcó salida",
+    note: "Personal que marcó salida no está permitido ingresar.",
+  });
+  showScanToast("Ya marcó salida. No puede ingresar otra vez hoy.", 2400);
+  speak("Personal que marcó salida no está permitido ingresar.", { flush: true });
 }
 
 function marcasDe(dni, fecha = todayKey(TZ)) {
@@ -2295,7 +2315,8 @@ function guardarAlmuerzo(dni, clase, horaRaw) {
     fecha: t.fecha,
     hora,
     at: msLima(t.fecha, hora),
-    tipo: clase === "almuerzo" ? "salida" : "entrada",
+    // tipo = clase para que el servidor no confunda retorno con entrada.
+    tipo: clase,
     clase,
     apellido: twoApellidos(who),
     nombre: parts.nombre || who.nombre || "",
@@ -2442,11 +2463,15 @@ function registrarMarcacion(worker, stamp) {
   const previas = marcasDe(dni);
   const t = stamp || nowParts(TZ);
   const clase = siguienteClase(previas, t.hora);
+  if (clase === "cerrado" || (clase === "entrada" && yaMarcoSalidaHoy(dni))) {
+    return { ok: false, cerrado: true };
+  }
   if (clase === "salida") {
     const choque = choqueAlmuerzo(dni, t.hora);
     if (choque) return { ok: false, choque };
   }
   const info = CLASE_MARCA[clase];
+  if (!info) return { ok: false, cerrado: true };
   const parts = nameParts(worker);
   store.addMarcacion({
     dni,
@@ -3760,14 +3785,20 @@ function completeWorkerScan(worker, dni, opId) {
   const id = normalizeDni(worker.dni || worker.id || dni);
   asegurarEntradaPrevia(worker);
   if (marcaDemasiadoPronto(id)) return true;
-  if (siguienteClase(marcasDe(id)) === "salida" && !tieneAlmuerzo(id)) {
+  const next = siguienteClase(marcasDe(id));
+  if (next === "cerrado" || yaMarcoSalidaHoy(id)) {
+    avisoSalidaCerrada(worker);
+    return true;
+  }
+  if (next === "salida" && !tieneAlmuerzo(id)) {
     showRetiroModal(worker);
     return true;
   }
   const mark = registrarMarcacion(worker);
   if (opId !== state.scanOpId) return false;
   if (!mark.ok) {
-    if (mark.choque) avisoChoqueAlmuerzo(worker, mark.choque);
+    if (mark.cerrado) avisoSalidaCerrada(worker);
+    else if (mark.choque) avisoChoqueAlmuerzo(worker, mark.choque);
     else if (mark.otra) speak("Escanee a la persona indicada.");
     return true;
   }
@@ -4483,6 +4514,10 @@ async function onClick(e) {
     const mark = registrarMarcacion(worker);
     refreshMesaUi();
     showDniModal();
+    if (mark.cerrado) {
+      avisoSalidaCerrada(worker);
+      return;
+    }
     setScanLive(mark.ok ? `${mark.label}. ${twoApellidos(worker)}` : "Espere para la siguiente marcación.", true);
     return;
   }
@@ -4561,6 +4596,10 @@ async function onClick(e) {
     const mark = registrarMarcacion(worker);
     dismissAlert();
     refreshMesaUi();
+    if (mark.cerrado) {
+      avisoSalidaCerrada(worker);
+      return;
+    }
     setScanLive(mark.ok ? `${mark.label}. ${mark.note}` : "Espere para la siguiente marcación.", !!mark.ok);
     return;
   }
